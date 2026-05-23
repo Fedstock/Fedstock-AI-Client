@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+:root {
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: #111827;
+  background: #f8fafc;
+  --app-bg: #f8fafc;
+  --card-bg: #ffffff;
+  --text-main: #111827;
+  --text-title: #1f2937;
+  --text-muted: #6b7280;
+  --text-subtle: #9ca3af;
+  --border-subtle: rgba(15, 23, 42, 0.08);
+  --primary: #2563eb;
+  --primary-soft: #eff6ff;
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --chart-muted: #94a3b8;
+  --grid-line: #e5e7eb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--app-bg);
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgba(37, 99, 235, 0.16);
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(45, 96, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.06);
+  }
+}
+
+@keyframes tracker-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.page-enter {
+  animation: page-enter 420ms ease both;
+}
+
+.motion-card {
+  animation: card-enter 460ms ease both;
+}
+
+.motion-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06);
+}
+
+.pulse-soft {
+  animation: soft-pulse 2.8s ease-in-out infinite;
+}
+
+.tracker-cell {
+  animation: tracker-pop 360ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .motion-card,
+  .pulse-soft,
+  .tracker-cell {
+    animation: none;
+  }
+
+  .motion-card:hover {
+    transform: none;
+  }
+}
