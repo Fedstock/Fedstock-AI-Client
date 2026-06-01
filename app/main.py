@@ -2,23 +2,31 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import threading
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import flwr as fl
 import numpy as np
 import pandas as pd
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sklearn.preprocessing import RobustScaler, StandardScaler
+from torch.utils.data import DataLoader
 
 from src.models.lstm import LightweightLSTM
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(os.getenv("FEDSTOCK_DATA_DIR") or str(Path(__file__).resolve().parents[1]))
 RUN_DIR = ROOT_DIR / "outputs" / "runs" / "20260522_025148_061195"
+
+FLOWER_SERVER = os.getenv("FLOWER_SERVER", "localhost:8080")
 CLIENT_MODEL_DIR = RUN_DIR / "models" / "clients"
 CONFIG_PATH = RUN_DIR / "config.json"
 
@@ -320,6 +328,76 @@ def _load_model(model_path: Path) -> LightweightLSTM:
 
 _MODEL_CACHE: dict[str, LightweightLSTM] = {}
 
+# ---------------------------------------------------------------------------
+# FL 학습 상태
+# ---------------------------------------------------------------------------
+_TRAINING_STATE: dict[str, Any] = {"status": "idle", "message": "학습 대기 중"}
+_TRAINING_LOCK = threading.Lock()
+
+
+def _make_sequences(features: np.ndarray, targets: np.ndarray, seq_len: int) -> tuple[np.ndarray, np.ndarray]:
+    X, y = [], []
+    for i in range(seq_len, len(features)):
+        X.append(features[i - seq_len:i])
+        y.append(targets[i])
+    return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+
+
+def _run_fl_training(df: pd.DataFrame) -> None:
+    from src.dataset import FedStockDataset, make_group_time_split_indices
+    from src.fl.client import FedStockClient
+
+    global _TRAINING_STATE
+
+    def _set(status: str, message: str) -> None:
+        with _TRAINING_LOCK:
+            _TRAINING_STATE = {"status": status, "message": message}
+
+    try:
+        _set("running", "데이터 전처리 중...")
+
+        df = df.dropna(subset=SELECTED_FEATURES + ["sales"]).reset_index(drop=True)
+        if len(df) <= SEQ_LEN * 2:
+            raise ValueError("학습에 필요한 데이터가 부족합니다 (최소 시퀀스 길이의 2배 이상).")
+
+        x_scaler = StandardScaler()
+        y_scaler = RobustScaler()
+        X_scaled = x_scaler.fit_transform(df[SELECTED_FEATURES].values.astype(np.float32))
+        y_scaled = y_scaler.fit_transform(df["sales"].values.reshape(-1, 1)).flatten().astype(np.float32)
+
+        split = make_group_time_split_indices(df["item_id"].values)
+        train_idx, val_idx = split["train"], split["val"]
+
+        X_train_seq, y_train_seq = _make_sequences(X_scaled[train_idx], y_scaled[train_idx], SEQ_LEN)
+        X_val_seq, y_val_seq = _make_sequences(X_scaled[val_idx], y_scaled[val_idx], SEQ_LEN)
+
+        if len(X_train_seq) == 0:
+            raise ValueError("훈련 시퀀스를 만들 수 없습니다. 상품별 데이터가 너무 적습니다.")
+        if len(X_val_seq) == 0:
+            X_val_seq, y_val_seq = X_train_seq, y_train_seq
+
+        train_loader = DataLoader(FedStockDataset(X_train_seq, y_train_seq), batch_size=64, shuffle=True)
+        val_loader = DataLoader(FedStockDataset(X_val_seq, y_val_seq), batch_size=64, shuffle=False)
+
+        client_id = str(df["client_id"].mode().iloc[0]) if "client_id" in df.columns else "default"
+        client = FedStockClient(
+            cid=client_id,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            X_train=X_train_seq,
+            y_train=y_train_seq,
+            input_size=len(SELECTED_FEATURES),
+            hidden_size=32,
+            y_scaler=y_scaler,
+        )
+
+        _set("running", f"Flower 서버 연결 중 ({FLOWER_SERVER})...")
+        fl.client.start_numpy_client(server_address=FLOWER_SERVER, client=client)
+        _set("done", "연합 학습 완료")
+
+    except Exception as exc:
+        _set("error", str(exc))
+
 
 def _get_model_for_client(client_id: str, fallback_model_path: Path) -> tuple[LightweightLSTM, Path]:
     candidate = CLIENT_MODEL_DIR / f"client_{client_id}.pt"
@@ -573,6 +651,26 @@ def _build_dashboard(
     }
 
 
+@app.get("/training-status")
+def training_status() -> dict[str, Any]:
+    with _TRAINING_LOCK:
+        return dict(_TRAINING_STATE)
+
+
+@app.post("/start-training")
+async def start_training(file: UploadFile = File(...)) -> dict[str, Any]:
+    with _TRAINING_LOCK:
+        if _TRAINING_STATE["status"] == "running":
+            raise HTTPException(status_code=409, detail="이미 학습이 진행 중입니다.")
+
+    content = await file.read()
+    raw_df = _read_csv(file, content)
+    prepared, _, _, _ = _prepare_frame(raw_df)
+
+    threading.Thread(target=_run_fl_training, args=(prepared,), daemon=True).start()
+    return {"status": "started", "server": FLOWER_SERVER}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -599,3 +697,26 @@ async def analyze_csv(file: UploadFile = File(...)) -> dict[str, Any]:
         used_model_paths=used_model_paths,
         stock_available=stock_available,
     )
+
+
+# ---------------------------------------------------------------------------
+# React 프론트엔드 서빙 (API 라우트 뒤에 등록해야 우선순위 유지됨)
+# ---------------------------------------------------------------------------
+def _get_frontend_dir() -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "frontend" / "dist"
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "frontend" / "dist"
+    return ROOT_DIR / "frontend" / "dist"
+
+
+_FRONTEND = _get_frontend_dir()
+
+if _FRONTEND.exists():
+    _assets = _FRONTEND / "assets"
+    if _assets.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def _serve_spa(full_path: str) -> FileResponse:
+        return FileResponse(str(_FRONTEND / "index.html"))

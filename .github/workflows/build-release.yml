@@ -1,0 +1,72 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:   # GitHub Actions UI에서 수동 실행 가능
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 프론트엔드 빌드 ──────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ── Python / PyInstaller 빌드 ─────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          # CPU 전용 PyTorch (CUDA 없이 번들 크기 줄임)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Render 서버 주소를 config에 기록 (GitHub Secret: FLOWER_SERVER)
+      - name: Write Flower server config
+        shell: pwsh
+        env:
+          FLOWER_SERVER: ${{ secrets.FLOWER_SERVER }}
+        run: |
+          if ($env:FLOWER_SERVER) {
+            $config = @{ flower_server = $env:FLOWER_SERVER } | ConvertTo-Json
+            Set-Content -Path fedstock.config.json -Value $config -Encoding UTF8
+          }
+
+      - name: Build with PyInstaller
+        run: pyinstaller fedstock.spec
+
+      # ── 릴리즈 패키징 ─────────────────────────────────────────────
+      - name: Zip release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/fedstock -DestinationPath Fedstock-AI-${{ github.ref_name }}-win.zip
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} `
+            "Fedstock-AI-${{ github.ref_name }}-win.zip" `
+            --title "Fedstock AI ${{ github.ref_name }}" `
+            --generate-notes
