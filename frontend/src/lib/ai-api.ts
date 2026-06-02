@@ -52,7 +52,9 @@ function hydrateDashboardData(data: ApiDashboardData): DashboardData {
 }
 
 function getApiBaseUrl() {
-  return import.meta.env.VITE_AI_API_URL ?? "http://localhost:8000";
+  // 빌드 후 FastAPI에서 서빙될 때는 같은 origin이므로 상대경로 사용
+  // 개발 중에는 vite.config.ts의 proxy가 /analyze-csv를 백엔드로 포워딩
+  return import.meta.env.VITE_AI_API_URL ?? "";
 }
 
 function extractErrorMessage(payload: unknown) {
