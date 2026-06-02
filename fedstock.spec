@@ -53,12 +53,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # CUDA 제외 (CPU 전용 배포)
-        "torch.cuda",
-        "torch.backends.cuda",
-        "torch.backends.cudnn",
-    ],
+    excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
