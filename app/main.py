@@ -9,7 +9,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import flwr as fl
 import numpy as np
 import pandas as pd
 import torch
@@ -344,6 +343,7 @@ def _make_sequences(features: np.ndarray, targets: np.ndarray, seq_len: int) -> 
 
 
 def _run_fl_training(df: pd.DataFrame) -> None:
+    import flwr as fl
     from src.dataset import FedStockDataset, make_group_time_split_indices
     from src.fl.client import FedStockClient
 

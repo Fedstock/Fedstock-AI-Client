@@ -1,25 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
+
+# flwr는 mypyc 컴파일 바이너리를 포함하므로 collect_all로 전체 수집
+flwr_datas, flwr_binaries, flwr_hiddenimports = collect_all("flwr")
 
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
-    binaries=[],
-    datas=[
+    binaries=flwr_binaries,
+    datas=flwr_datas + [
         ("outputs", "outputs"),
         ("frontend/dist", "frontend/dist"),
         ("fedstock.config.json", "."),
     ],
-    hiddenimports=[
-        # flwr / gRPC
-        "flwr",
-        "flwr.client",
-        "flwr.client.numpy_client",
-        "flwr.client.app",
-        "flwr.common",
-        "flwr.common.grpc",
-        "flwr.proto",
+    hiddenimports=flwr_hiddenimports + [
+        # gRPC
         "grpc",
         "grpc._cython",
         "grpc._cython.cygrpc",
