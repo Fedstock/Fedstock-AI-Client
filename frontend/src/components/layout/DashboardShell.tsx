@@ -9,6 +9,8 @@ type DashboardShellProps = {
   onPageChange: (page: PageId) => void;
   dataSource: DashboardData["source"];
   headerSummary?: string;
+  storeId: string;
+  onLogout: () => void;
   children: ReactNode;
 };
 
@@ -18,6 +20,8 @@ export function DashboardShell({
   onPageChange,
   dataSource,
   headerSummary,
+  storeId,
+  onLogout,
   children,
 }: DashboardShellProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -41,6 +45,8 @@ export function DashboardShell({
           onPageChange={onPageChange}
           isCollapsed={isCollapsed}
           onToggleCollapsed={() => setIsCollapsed((value) => !value)}
+          storeId={storeId}
+          onLogout={onLogout}
         />
         <div className="h-screen min-w-0 overflow-y-auto bg-slate-50" onScroll={handleMainScroll}>
           <AppHeader
@@ -50,7 +56,7 @@ export function DashboardShell({
             summary={headerSummary}
             isGlass={isHeaderGlass}
           />
-          <div className="sticky top-[132px] z-20 shrink-0 bg-gradient-to-b from-slate-50/90 to-slate-50/0 px-6 pb-4 backdrop-blur-xl lg:hidden">
+          <div className="sticky top-[96px] z-20 shrink-0 bg-gradient-to-b from-slate-50/90 to-slate-50/0 px-6 pb-4 backdrop-blur-xl lg:hidden">
             <div className="flex gap-2 overflow-x-auto pb-2">
               {pages.map((page) => (
                 <button

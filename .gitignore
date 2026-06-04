@@ -47,3 +47,6 @@ outputs/runs/*
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+.claude/
+outputs/
