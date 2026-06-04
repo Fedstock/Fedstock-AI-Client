@@ -2,9 +2,8 @@ import type { LucideIcon } from "lucide-react";
 
 export type PageId =
   | "overview"
-  | "upload"
-  | "inventory"
-  | "orders";
+  | "training"
+  | "upload";
 
 export type Trend = "up" | "down" | "stable";
 export type InventoryStatus = "critical" | "warning" | "normal" | "overstock";
@@ -49,6 +48,8 @@ export type ForecastItem = {
   itemName: string;
   category: string;
   forecastQty: number;
+  forecastDailyQty?: number;
+  forecastHorizonDays?: number;
   rollingMean7: number;
   rollingMean28: number;
   wowChangePct: number;
@@ -60,6 +61,29 @@ export type ForecastPoint = {
   date: string;
   actual: number;
   predicted: number;
+};
+
+export type ForecastWindow = {
+  anchorDate: string;
+  startDate: string;
+  endDate: string;
+  horizonDays: number;
+  label: string;
+};
+
+export type ForecastDailyPoint = {
+  date: string;
+  isoDate: string;
+  sales: number;
+};
+
+export type ForecastDailySeries = {
+  itemId: string;
+  itemName: string;
+  category: string;
+  forecastQty: number;
+  forecastHorizonDays: number;
+  points: ForecastDailyPoint[];
 };
 
 export type InventoryItem = {
@@ -112,13 +136,64 @@ export type CsvStatus = {
 };
 
 export type DashboardData = {
-  source: "mock" | "ai";
+  source: "empty" | "ai";
   overviewMetrics: Metric[];
+  forecastWindow?: ForecastWindow;
   salesTrend: SalesTrendPoint[];
   topProducts: TopProduct[];
+  forecastItems: ForecastItem[];
+  forecastDailySeries: ForecastDailySeries[];
   forecastSeries: ForecastPoint[];
   inventoryMetrics: Metric[];
   inventoryItems: InventoryItem[];
   orderMetrics: Metric[];
   orderRecommendations: OrderRecommendation[];
+};
+
+export type TrainingStatus = {
+  status: "idle" | "running" | "done" | "error";
+  message: string;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  clientId?: string | null;
+  server?: string | null;
+  centralBackend?: string | null;
+  latestModelPath?: string | null;
+  latestImportancePath?: string | null;
+  latestImportance: Array<{
+    rank: number;
+    feature: string;
+    importance: number;
+  }>;
+  centralSync?: {
+    clientId?: string;
+    clusterId?: number | null;
+    assignedTo?: string | null;
+    clusterMembers?: string[];
+    similarClients?: Array<{
+      clientId: string;
+      distance: number;
+    }>;
+    uploadedModelPath?: string | null;
+    effectiveModelPath?: string | null;
+    centralEffectiveModelPath?: string | null;
+  } | null;
+};
+
+export type LocalState = {
+  flowerServer: string;
+  centralBackend: string;
+  runDir: string;
+  selectedFeatures: string[];
+  modelDirExists: boolean;
+  pretrainedModelCount: number;
+  localOutputDir: string;
+  localModelCount: number;
+  syncedModelCount: number;
+  latestSyncedModelPath?: string | null;
+  latestLocalModelPath?: string | null;
+  latestImportancePath?: string | null;
+  latestImportance: TrainingStatus["latestImportance"];
+  centralSync?: TrainingStatus["centralSync"];
+  training: TrainingStatus;
 };

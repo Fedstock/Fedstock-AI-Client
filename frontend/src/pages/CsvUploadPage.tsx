@@ -1,5 +1,14 @@
-import { useRef, useState, type DragEvent } from "react";
-import { AlertTriangle, CheckCircle, Database, FileSpreadsheet, Upload, XCircle } from "lucide-react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import { createPortal } from "react-dom";
+import {
+  AlertTriangle,
+  CheckCircle,
+  Database,
+  FileSpreadsheet,
+  Upload,
+  XCircle,
+  type LucideIcon,
+} from "lucide-react";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
@@ -12,6 +21,82 @@ type CsvUploadPageProps = {
   csvStatus: CsvStatus;
   onCsvLoaded: (status: CsvStatus, data: DashboardData) => void;
 };
+
+const loadingSteps = [
+  "판매 이력 파일을 확인하는 중입니다.",
+  "비슷한 판매 흐름의 매장을 찾는 중입니다.",
+  "상품별 예상 판매량을 계산하는 중입니다.",
+  "결과 화면에 보여줄 내용을 정리하는 중입니다.",
+];
+
+type AnalysisState = "idle" | "loading" | "complete";
+
+type UploadTargetProps = {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  buttonLabel: string;
+  selectedFileName?: string;
+  disabled?: boolean;
+  isActive: boolean;
+  onBrowse: () => void;
+  onDropFile: (file: File) => void;
+  onDragStateChange: (isDragging: boolean) => void;
+};
+
+function UploadTarget({
+  icon: Icon,
+  title,
+  description,
+  buttonLabel,
+  selectedFileName,
+  disabled = false,
+  isActive,
+  onBrowse,
+  onDropFile,
+  onDragStateChange,
+}: UploadTargetProps) {
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    onDragStateChange(false);
+    const file = event.dataTransfer.files[0];
+    if (file) onDropFile(file);
+  };
+
+  return (
+    <div
+      className={`flex min-h-[280px] flex-col justify-between rounded-[18px] border border-dashed p-5 transition ${
+        isActive ? "border-[#2563EB] bg-[#EFF6FF]" : "border-[rgba(15,23,42,0.12)] bg-slate-50"
+      }`}
+      onDragOver={(event) => {
+        event.preventDefault();
+        onDragStateChange(true);
+      }}
+      onDragLeave={() => onDragStateChange(false)}
+      onDrop={handleDrop}
+    >
+      <div>
+        <div className="mb-4 inline-flex rounded-2xl bg-white p-3 text-[#2563EB] shadow-sm">
+          <Icon className="h-6 w-6" aria-hidden="true" />
+        </div>
+        <h3 className="text-lg font-semibold text-[#111827]">{title}</h3>
+        <p className="mt-2 text-sm leading-6 text-[#6B7280]">{description}</p>
+      </div>
+      <div className="mt-6 space-y-3">
+        {selectedFileName ? (
+          <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 text-sm">
+            <p className="text-xs font-medium text-[#6B7280]">선택된 파일</p>
+            <p className="mt-1 break-all font-semibold text-[#111827]">{selectedFileName}</p>
+          </div>
+        ) : null}
+        <Button type="button" onClick={onBrowse} disabled={disabled}>
+          <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+          {buttonLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function ValidationRow({ item }: { item: ValidationItem }) {
   const Icon = item.status === "passed" ? CheckCircle : item.status === "failed" ? XCircle : AlertTriangle;
@@ -30,89 +115,185 @@ function ValidationRow({ item }: { item: ValidationItem }) {
   );
 }
 
-export function CsvUploadPage({ csvStatus, onCsvLoaded }: CsvUploadPageProps) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+function FullScreenAnalysisOverlay({
+  state,
+  stepIndex,
+  isLeaving,
+}: {
+  state: Exclude<AnalysisState, "idle">;
+  stepIndex: number;
+  isLeaving: boolean;
+}) {
+  const isComplete = state === "complete";
 
-  const handleFile = async (file: File) => {
-    setIsAnalyzing(true);
+  useEffect(() => {
+    if (!isComplete) return;
+
+    try {
+      const AudioContextCtor =
+        window.AudioContext ??
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextCtor) return;
+
+      const context = new AudioContextCtor();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, context.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(1320, context.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.18);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.2);
+      window.setTimeout(() => void context.close(), 260);
+    } catch {
+      // Browser audio policies can block this; the visual completion still works.
+    }
+  }, [isComplete]);
+
+  return createPortal(
+    <div className={`fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/32 px-5 backdrop-blur-md ${isLeaving ? "analysis-overlay-out" : "analysis-overlay-in"}`}>
+      <div className={`w-full max-w-[680px] rounded-[42px] border border-white/80 bg-white/95 px-10 py-12 text-center shadow-[0_38px_120px_rgba(15,23,42,0.24)] sm:px-14 sm:py-14 ${isLeaving ? "analysis-modal-out" : "analysis-modal-in"}`}>
+        <div className="mx-auto flex h-32 w-32 items-center justify-center">
+          {isComplete ? (
+            <div className="relative flex h-24 w-24 items-center justify-center">
+              <span className="completion-pulse absolute inset-0 rounded-full bg-emerald-400/20" />
+              <svg className="relative h-24 w-24" viewBox="0 0 80 80" aria-hidden="true">
+                <circle
+                  className="completion-ring"
+                  cx="40"
+                  cy="40"
+                  r="31"
+                  fill="none"
+                  stroke="#10B981"
+                  strokeWidth="6"
+                  strokeLinecap="round"
+                />
+                <path
+                  className="completion-check"
+                  d="M25 41.5 35.5 52 56 30"
+                  fill="none"
+                  stroke="#10B981"
+                  strokeWidth="7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+          ) : (
+            <div className="h-24 w-24 animate-spin rounded-full border-[7px] border-blue-100 border-t-blue-600" />
+          )}
+        </div>
+
+        <h2 className="mt-7 text-3xl font-extrabold tracking-tight text-slate-950 transition-all duration-500">
+          {isComplete ? "예측이 완료되었습니다" : loadingSteps[stepIndex]}
+        </h2>
+        <p className="mx-auto mt-5 max-w-[520px] text-base leading-7 text-slate-500">
+          {isComplete
+            ? "잠시 후 판매 예측 결과 화면으로 이동합니다."
+            : "업로드한 판매 이력을 바탕으로 상품별 예상 판매량을 준비하고 있습니다."}
+        </p>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function CsvUploadPage({
+  csvStatus,
+  onCsvLoaded,
+}: CsvUploadPageProps) {
+  const forecastInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDraggingForecast, setIsDraggingForecast] = useState(false);
+  const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
+  const [isOverlayLeaving, setIsOverlayLeaving] = useState(false);
+  const [loadingStepIndex, setLoadingStepIndex] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const isAnalyzing = analysisState !== "idle";
+
+  useEffect(() => {
+    if (analysisState !== "loading") {
+      setLoadingStepIndex(0);
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setLoadingStepIndex((current) => Math.min(current + 1, loadingSteps.length - 1));
+    }, 900);
+
+    return () => window.clearInterval(intervalId);
+  }, [analysisState]);
+
+  const handleForecastFile = async (file: File) => {
+    setAnalysisState("loading");
+    setIsOverlayLeaving(false);
+    setLoadingStepIndex(0);
     setErrorMessage(null);
     try {
       const result = await analyzeCsvWithAi(file);
+      setLoadingStepIndex(loadingSteps.length - 1);
+      setAnalysisState("complete");
+      await new Promise((resolve) => window.setTimeout(resolve, 1400));
+      setIsOverlayLeaving(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 360));
       onCsvLoaded(result.status, result.data);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "AI 서버 분석에 실패했습니다.");
-    } finally {
-      setIsAnalyzing(false);
+      setErrorMessage(error instanceof Error ? error.message : "파일을 분석하지 못했습니다. 잠시 후 다시 시도하세요.");
+      setIsOverlayLeaving(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 240));
+      setAnalysisState("idle");
+      setIsOverlayLeaving(false);
     }
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setIsDragging(false);
-    const file = event.dataTransfer.files[0];
-    if (file) void handleFile(file);
   };
 
   return (
     <div className="mx-auto w-full max-w-[1080px] space-y-6">
       <div className="grid auto-rows-min gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
-        <Card
-          className={`border-dashed p-6 transition ${isDragging ? "border-[#2563EB] bg-[#EFF6FF]" : ""}`}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-        >
-          <div className="flex flex-col items-center justify-center rounded-[16px] bg-slate-50 px-6 py-10 text-center">
-            <div className="mb-4 rounded-3xl bg-white p-4 text-[#2563EB] shadow-sm">
-              <Upload className="h-8 w-8" aria-hidden="true" />
-            </div>
-            <h3 className="text-xl font-semibold text-[#111827]">AI로 분석할 판매·재고 파일을 올려주세요</h3>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-[#6B7280]">
-              CSV는 로컬 AI 서버로 전송되고, PA-CFL LSTM 모델이 만든 결과만 화면에 반영됩니다.
-            </p>
-            <div className="mt-5 flex flex-wrap justify-center gap-2">
-              <Button type="button" onClick={() => inputRef.current?.click()} disabled={isAnalyzing}>
-                <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
-                {isAnalyzing ? "AI 분석 중" : "파일 선택"}
-              </Button>
-              <Button type="button" variant="outline" onClick={() => inputRef.current?.click()} disabled={isAnalyzing}>
-                파일 바꾸기
-              </Button>
-            </div>
-            {errorMessage ? (
-              <div className="mt-5 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {errorMessage}
-              </div>
-            ) : null}
-            <input
-              ref={inputRef}
-              className="sr-only"
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleFile(file);
-              }}
+        <Card className="p-6">
+          <div className="grid gap-4">
+            <UploadTarget
+              icon={Upload}
+              title="판매 이력 파일"
+              description="판매 이력 CSV를 올리면 마지막 날짜 다음 날의 상품별 예상 판매량을 계산합니다."
+              buttonLabel={isAnalyzing ? "계산 중..." : "파일 선택"}
+              selectedFileName={csvStatus.fileName}
+              disabled={isAnalyzing}
+              isActive={isDraggingForecast}
+              onBrowse={() => forecastInputRef.current?.click()}
+              onDropFile={(file) => void handleForecastFile(file)}
+              onDragStateChange={setIsDraggingForecast}
             />
           </div>
+          {errorMessage ? (
+            <div className="mt-5 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          ) : null}
+          <input
+            ref={forecastInputRef}
+            className="sr-only"
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void handleForecastFile(file);
+            }}
+          />
         </Card>
 
         <Card>
           <CardHeader>
             <div>
               <CardTitle>파일 요약</CardTitle>
-              <CardDescription>업로드 후 데이터 범위를 확인합니다.</CardDescription>
+              <CardDescription>예상 판매량 계산에 사용된 파일입니다.</CardDescription>
             </div>
             <Database className="h-5 w-5 text-[#6B7280]" aria-hidden="true" />
           </CardHeader>
           {csvStatus.state === "empty" ? (
-            <EmptyState icon={FileSpreadsheet} title="아직 올린 파일이 없습니다" description="파일을 올리면 자료 개수, 상품 수, 기간이 표시됩니다." />
+            <EmptyState icon={FileSpreadsheet} title="아직 올린 파일이 없습니다" description="판매 이력 파일을 올리면 자료 개수, 상품 수, 기간이 표시됩니다." />
           ) : (
             <div className="space-y-4">
               <div>
@@ -147,7 +328,7 @@ export function CsvUploadPage({ csvStatus, onCsvLoaded }: CsvUploadPageProps) {
           <CardHeader>
             <div>
               <CardTitle>필수 항목 확인</CardTitle>
-              <CardDescription>예상 판매와 재고 계산에 필요한 항목을 확인합니다.</CardDescription>
+              <CardDescription>판매량 예측에 필요한 항목을 확인합니다.</CardDescription>
             </div>
           </CardHeader>
           {csvStatus.validation.length ? (
@@ -157,15 +338,15 @@ export function CsvUploadPage({ csvStatus, onCsvLoaded }: CsvUploadPageProps) {
               ))}
             </div>
           ) : (
-            <EmptyState icon={CheckCircle} title="확인 대기 중" description="파일을 올리면 필요한 항목이 들어 있는지 확인합니다." />
+            <EmptyState icon={CheckCircle} title="확인 대기 중" description="판매 이력 파일을 올리면 필요한 항목이 들어 있는지 확인합니다." />
           )}
         </Card>
 
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>오류 및 경고</CardTitle>
-              <CardDescription>업로드 품질을 빠르게 점검합니다.</CardDescription>
+              <CardTitle>처리 안내</CardTitle>
+              <CardDescription>판매량 예측 과정에서 참고할 내용을 알려드립니다.</CardDescription>
             </div>
           </CardHeader>
           {csvStatus.issues.length ? (
@@ -191,6 +372,9 @@ export function CsvUploadPage({ csvStatus, onCsvLoaded }: CsvUploadPageProps) {
           )}
         </Card>
       </div>
+      {analysisState !== "idle" ? (
+        <FullScreenAnalysisOverlay state={analysisState} stepIndex={loadingStepIndex} isLeaving={isOverlayLeaving} />
+      ) : null}
     </div>
   );
 }

@@ -13,7 +13,7 @@ export function AppHeader({ pages, activePage, dataSource, summary, isGlass = fa
   const page = pages.find((item) => item.id === activePage) ?? pages[0];
   
   return (
-    <header className="sticky top-0 z-30 shrink-0 px-6 pb-10 pt-11 sm:px-8 lg:px-10 xl:px-12">
+    <header className="sticky top-0 z-30 shrink-0 px-6 py-5 sm:px-8 lg:px-10 lg:py-6 xl:px-12">
       <div
         aria-hidden="true"
         className={cn(

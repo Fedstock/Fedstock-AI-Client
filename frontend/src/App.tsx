@@ -1,75 +1,77 @@
 import { useMemo, useState } from "react";
 import {
+  Cpu,
   LayoutDashboard,
-  Package,
-  ShoppingCart,
   Upload,
 } from "lucide-react";
 import { DashboardShell } from "./components/layout/DashboardShell";
 import { CsvUploadPage } from "./pages/CsvUploadPage";
+import { LoginPage } from "./pages/LoginPage";
 import { OverviewPage } from "./pages/OverviewPage";
-import { InventoryPage } from "./pages/InventoryPage";
-import { OrderRecommendationPage } from "./pages/OrderRecommendationPage";
-import { mockCsvStatus, mockDashboardData } from "./lib/mock-data";
+import { TrainingPage } from "./pages/TrainingPage";
+import { emptyCsvStatus, emptyDashboardData } from "./lib/empty-data";
 import type { CsvStatus, DashboardData, PageDefinition, PageId } from "./types/dashboard";
 
 const pages: PageDefinition[] = [
   {
-    id: "overview",
-    label: "오늘 요약",
-    title: "오늘 요약",
-    subtitle: "품절 위험 상품과 발주 추천을 먼저 확인하세요.",
-    icon: LayoutDashboard,
+    id: "training",
+    label: "로컬 학습",
+    title: "로컬 학습",
+    subtitle: "이 매장의 로컬 학습과 중앙 서버 동기화 상태를 점검합니다.",
+    icon: Cpu,
   },
   {
     id: "upload",
     label: "자료 올리기",
     title: "자료 올리기",
-    subtitle: "판매·재고 자료를 올리면 화면이 바로 바뀝니다.",
+    subtitle: "판매 이력 파일을 올리면 Fedstock이 예상 판매량을 계산합니다.",
     icon: Upload,
   },
   {
-    id: "inventory",
-    label: "재고 점검",
-    title: "재고 점검",
-    subtitle: "남은 기간이 짧은 상품부터 확인하세요.",
-    icon: Package,
-  },
-  {
-    id: "orders",
-    label: "발주 추천",
-    title: "발주 추천",
-    subtitle: "오늘 발주할 상품과 수량을 확인하세요.",
-    icon: ShoppingCart,
+    id: "overview",
+    label: "판매 예측 결과",
+    title: "판매 예측 결과",
+    subtitle: "상품별 예상 판매량과 운영 포인트를 확인하세요.",
+    icon: LayoutDashboard,
   },
 ];
 
 export default function App() {
-  const [activePage, setActivePage] = useState<PageId>("overview");
-  const [dashboardData, setDashboardData] = useState<DashboardData>(mockDashboardData);
-  const [csvStatus, setCsvStatus] = useState<CsvStatus>(mockCsvStatus);
+  const [activePage, setActivePage] = useState<PageId>("training");
+  const [dashboardData, setDashboardData] = useState<DashboardData>(emptyDashboardData);
+  const [csvStatus, setCsvStatus] = useState<CsvStatus>(emptyCsvStatus);
+  const [storeId, setStoreId] = useState(() => window.localStorage.getItem("fedstock_store_id") ?? "");
 
   const headerSummary = useMemo(() => {
-    const criticalCount = dashboardData.inventoryItems.filter((item) => item.status === "critical").length;
-    const orderCount = dashboardData.orderRecommendations.filter((item) => item.recommendedOrderQty > 0).length;
+    const hasAiResult = dashboardData.source === "ai";
 
     switch (activePage) {
+      case "training":
+        return "로컬 사전학습, noisy importance 생성, 중앙 집계 모델 동기화 상태를 확인하세요.";
       case "upload":
-        return dashboardData.source === "ai"
-            ? "AI 모델 분석 결과가 반영됐습니다. 재고 점검과 발주 추천을 확인하세요."
-            : "판매·재고 자료를 올리면 로컬 AI 모델로 분석합니다.";
-      case "inventory":
-        return `품절 위험 ${criticalCount}개를 먼저 확인하고, 여유 재고는 뒤로 미뤄도 됩니다.`;
-      case "orders":
-        return `발주 추천 ${orderCount}개 중 우선순위가 높은 상품부터 처리하세요.`;
+        return hasAiResult
+          ? "다음 날짜 판매 예측 결과가 준비됐습니다. 결과 화면에서 확인하세요."
+          : "판매 이력 파일을 올리면 마지막 날짜 다음 날의 예상 판매량을 계산합니다.";
       case "overview":
       default:
-        return `품절 위험 ${criticalCount}개와 발주 추천 ${orderCount}개를 먼저 확인하세요.`;
+        return hasAiResult
+          ? "상품별 예상 판매량과 수요 흐름을 확인하세요."
+          : "자료 올리기에서 판매 이력 파일을 먼저 선택하세요.";
     }
   }, [activePage, dashboardData]);
 
   const pageContent = useMemo(() => {
     switch (activePage) {
+      case "training":
+        return (
+          <TrainingPage
+            onTrainingComplete={(status, data) => {
+              setCsvStatus(status);
+              setDashboardData(data);
+              setActivePage("overview");
+            }}
+          />
+        );
       case "upload":
         return (
           <CsvUploadPage
@@ -77,18 +79,26 @@ export default function App() {
             onCsvLoaded={(status, data) => {
               setCsvStatus(status);
               setDashboardData(data);
+              setActivePage("overview");
             }}
           />
         );
-      case "inventory":
-        return <InventoryPage data={dashboardData} />;
-      case "orders":
-        return <OrderRecommendationPage data={dashboardData} />;
       case "overview":
       default:
         return <OverviewPage data={dashboardData} />;
     }
   }, [activePage, csvStatus, dashboardData]);
+
+  if (!storeId) {
+    return (
+      <LoginPage
+        onLogin={(nextStoreId) => {
+          window.localStorage.setItem("fedstock_store_id", nextStoreId);
+          setStoreId(nextStoreId);
+        }}
+      />
+    );
+  }
 
   return (
     <DashboardShell
@@ -97,6 +107,11 @@ export default function App() {
       onPageChange={setActivePage}
       dataSource={dashboardData.source}
       headerSummary={headerSummary}
+      storeId={storeId}
+      onLogout={() => {
+        window.localStorage.removeItem("fedstock_store_id");
+        setStoreId("");
+      }}
     >
       {pageContent}
     </DashboardShell>

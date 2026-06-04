@@ -1,4 +1,5 @@
 import { LuMenu } from "react-icons/lu";
+import { LogOut } from "lucide-react";
 import type { PageDefinition, PageId } from "../../types/dashboard";
 import { cn } from "../../lib/utils";
 
@@ -8,6 +9,8 @@ type AppSidebarProps = {
   onPageChange: (page: PageId) => void;
   isCollapsed: boolean;
   onToggleCollapsed: () => void;
+  storeId: string;
+  onLogout: () => void;
 };
 
 export function AppSidebar({
@@ -16,6 +19,8 @@ export function AppSidebar({
   onPageChange,
   isCollapsed,
   onToggleCollapsed,
+  storeId,
+  onLogout,
 }: AppSidebarProps) {
   return (
     <aside
@@ -67,7 +72,7 @@ export function AppSidebar({
           );
         })}
       </nav>
-      <div className="mt-auto pt-6">
+      <div className="mt-auto space-y-2 pt-6">
         <div
           className={cn(
             "flex items-center overflow-hidden rounded-3xl bg-gray-50 transition-all duration-300",
@@ -83,10 +88,34 @@ export function AppSidebar({
               isCollapsed ? "max-w-0 -translate-x-1 opacity-0 delay-0" : "max-w-[132px] translate-x-0 opacity-100 delay-150",
             )}
           >
-            <p className="truncate text-sm font-semibold tracking-tight text-slate-900">Gachon Store</p>
-            <p className="truncate text-xs text-slate-400">Store Manager</p>
+            <p className="truncate text-sm font-semibold tracking-tight text-slate-900">{storeId}</p>
+            <p className="truncate text-xs text-slate-400">매장 관리자</p>
           </div>
         </div>
+        <button
+          type="button"
+          className={cn(
+            "flex h-10 w-full items-center overflow-hidden rounded-2xl text-sm font-medium text-slate-500 transition hover:bg-slate-50 hover:text-slate-900",
+            isCollapsed && "justify-center",
+          )}
+          onClick={onLogout}
+          title={isCollapsed ? "로그아웃" : undefined}
+          aria-label="로그아웃"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center">
+            <LogOut className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <span
+            className={cn(
+              "overflow-hidden whitespace-nowrap transition-[max-width,margin,opacity,transform] duration-200 ease-out",
+              isCollapsed
+                ? "ml-0 max-w-0 -translate-x-1 opacity-0 delay-0"
+                : "ml-2 max-w-[120px] translate-x-0 opacity-100 delay-150",
+            )}
+          >
+            로그아웃
+          </span>
+        </button>
       </div>
     </aside>
   );

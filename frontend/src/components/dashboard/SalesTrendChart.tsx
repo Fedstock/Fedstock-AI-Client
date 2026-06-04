@@ -2,6 +2,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -11,7 +12,29 @@ import type { SalesTrendPoint } from "../../types/dashboard";
 import { formatNumber } from "../../lib/utils";
 import { ChartTooltip } from "./ChartTooltip";
 
-export function SalesTrendChart({ data }: { data: SalesTrendPoint[] }) {
+type SalesTrendChartProps = {
+  data: SalesTrendPoint[];
+  salesName?: string;
+  forecastName?: string;
+};
+
+export function SalesTrendChart({
+  data,
+  salesName = "실제 판매",
+  forecastName = "예상 판매",
+}: SalesTrendChartProps) {
+  const salesValues = data.map((point) => Number(point.sales)).filter(Number.isFinite);
+  const allValues = data
+    .flatMap((point) => [Number(point.sales), Number(point.forecast)])
+    .filter(Number.isFinite);
+  const minSales = salesValues.length ? Math.min(...salesValues) : 0;
+  const maxSales = salesValues.length ? Math.max(...salesValues) : 0;
+  const minValue = allValues.length ? Math.min(...allValues) : 0;
+  const maxValue = allValues.length ? Math.max(...allValues) : 1;
+  const span = Math.max(maxValue - minValue, maxValue * 0.18, 1);
+  const domainMin = Math.max(0, Math.floor((minValue - span * 0.24) * 10) / 10);
+  const domainMax = Math.ceil((maxValue + span * 0.24) * 10) / 10;
+
   return (
     <ResponsiveContainer width="100%" height={320}>
       <AreaChart data={data} margin={{ top: 26, right: 18, left: 0, bottom: 0 }}>
@@ -40,10 +63,38 @@ export function SalesTrendChart({ data }: { data: SalesTrendPoint[] }) {
           axisLine={false}
           tick={{ fill: "#A8B1C1", fontSize: 12 }}
           width={50}
-          domain={["dataMin - 80", "dataMax + 80"]}
+          domain={[domainMin, domainMax]}
           tickCount={4}
           tickFormatter={(value) => formatNumber(Number(value))}
         />
+        <ReferenceLine
+          y={maxSales}
+          stroke="#2563EB"
+          strokeDasharray="3 5"
+          strokeOpacity={0.44}
+          label={{
+            value: `최대 ${formatNumber(maxSales)}개`,
+            position: "insideTopRight",
+            fill: "#2563EB",
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        />
+        {maxSales !== minSales ? (
+          <ReferenceLine
+            y={minSales}
+            stroke="#F97316"
+            strokeDasharray="3 5"
+            strokeOpacity={0.5}
+            label={{
+              value: `최소 ${formatNumber(minSales)}개`,
+              position: "insideBottomRight",
+              fill: "#EA580C",
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          />
+        ) : null}
         <Tooltip
           cursor={{ stroke: "#CBD5E1", strokeWidth: 1, strokeDasharray: "4 4" }}
           content={
@@ -55,7 +106,7 @@ export function SalesTrendChart({ data }: { data: SalesTrendPoint[] }) {
         <Area
           type="monotone"
           dataKey="sales"
-          name="실제 판매"
+          name={salesName}
           stroke="#3B82F6"
           fill="url(#colorSales)"
           fillOpacity={1}
@@ -67,7 +118,7 @@ export function SalesTrendChart({ data }: { data: SalesTrendPoint[] }) {
         <Area
           type="monotone"
           dataKey="forecast"
-          name="예상 판매"
+          name={forecastName}
           stroke="#94A3B8"
           fill="url(#forecastTrendGradient)"
           fillOpacity={1}

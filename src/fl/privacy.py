@@ -2,11 +2,19 @@ import numpy as np
 
 def calculate_feature_importance(X, y):
     """
-    Train an XGBoost model and return the feature importance scores.
-    """
-    import xgboost as xgb
+    Train a tree-based regressor and return the feature importance scores.
 
-    model = xgb.XGBRegressor(n_estimators=100, random_state=42, n_jobs=-1, tree_method='hist')
+    The desktop client prioritizes runtime stability over exact parity with the
+    research script. XGBoost can segfault in some local macOS/threaded demo
+    environments, so we use a sklearn ensemble by default here.
+    """
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    model = ExtraTreesRegressor(
+        n_estimators=200,
+        random_state=42,
+        n_jobs=1,
+    )
     model.fit(X, y)
     return model.feature_importances_
 
