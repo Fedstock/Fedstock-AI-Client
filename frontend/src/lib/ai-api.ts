@@ -26,6 +26,8 @@ type AnalyzeCsvResponse = {
   data: ApiDashboardData;
 };
 
+type HealthResponse = Record<string, unknown>;
+
 const iconMap = {
   AlertCircle,
   DollarSign,
@@ -55,8 +57,16 @@ function hydrateDashboardData(data: ApiDashboardData): DashboardData {
   };
 }
 
-function getApiBaseUrl() {
-  return import.meta.env.VITE_AI_API_URL ?? "http://localhost:8000";
+function stripTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
+function getLocalApiBaseUrl() {
+  return stripTrailingSlash(import.meta.env.VITE_LOCAL_API_URL ?? import.meta.env.VITE_AI_API_URL ?? "http://localhost:8000");
+}
+
+function getCentralApiBaseUrl() {
+  return stripTrailingSlash(import.meta.env.VITE_CENTRAL_API_URL ?? "https://fadstock.org");
 }
 
 function extractErrorMessage(payload: unknown) {
@@ -80,7 +90,7 @@ export async function analyzeCsvWithAi(file: File) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${getApiBaseUrl()}/analyze-csv`, {
+  const response = await fetch(`${getLocalApiBaseUrl()}/analyze-csv`, {
     method: "POST",
     body: formData,
   });
@@ -106,7 +116,7 @@ export async function startTrainingWithAi(file: File) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${getApiBaseUrl()}/start-training`, {
+  const response = await fetch(`${getLocalApiBaseUrl()}/start-training`, {
     method: "POST",
     body: formData,
   });
@@ -125,7 +135,7 @@ export async function startTrainingWithAi(file: File) {
 }
 
 export async function fetchTrainingStatus() {
-  const response = await fetch(`${getApiBaseUrl()}/training-status`);
+  const response = await fetch(`${getLocalApiBaseUrl()}/training-status`);
   if (!response.ok) {
     throw new Error("학습 상태를 불러오지 못했습니다.");
   }
@@ -133,9 +143,25 @@ export async function fetchTrainingStatus() {
 }
 
 export async function fetchLocalState() {
-  const response = await fetch(`${getApiBaseUrl()}/local-state`);
+  const response = await fetch(`${getLocalApiBaseUrl()}/local-state`);
   if (!response.ok) {
     throw new Error("로컬 상태를 불러오지 못했습니다.");
   }
   return (await response.json()) as LocalState;
+}
+
+export async function fetchLocalHealth() {
+  const response = await fetch(`${getLocalApiBaseUrl()}/health`);
+  if (!response.ok) {
+    throw new Error("로컬 exe 상태를 확인하지 못했습니다.");
+  }
+  return (await response.json()) as HealthResponse;
+}
+
+export async function fetchCentralHealth() {
+  const response = await fetch(`${getCentralApiBaseUrl()}/health`);
+  if (!response.ok) {
+    throw new Error("중앙 서버 상태를 확인하지 못했습니다.");
+  }
+  return (await response.json()) as HealthResponse;
 }

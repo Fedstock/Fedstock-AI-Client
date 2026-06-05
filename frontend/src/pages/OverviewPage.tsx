@@ -79,6 +79,10 @@ function isForecastMetric(metric: Metric) {
   return !/(품절|재고|발주)/.test(metric.label);
 }
 
+function toChartNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function displayCategory(category: string) {
   const raw = category.split("·").pop()?.trim() ?? category;
   return raw || "상품군 미확인";
@@ -291,13 +295,26 @@ export function OverviewPage({ data }: { data: DashboardData }) {
   );
   const selectedChartData = useMemo(() => {
     if (!selectedSeries) return [];
-    const dailyAverage = selectedSeries.forecastQty / selectedSeries.forecastHorizonDays;
-    return selectedSeries.points.map((point) => ({
-      date: point.date,
-      sales: point.sales,
-      forecast: dailyAverage,
-      revenue: 0,
-    }));
+    const isLegacySingleForecast = selectedSeries.forecastHorizonDays === 1 && selectedSeries.points.length === 1;
+
+    return selectedSeries.points.map((point) => {
+      const predictedSales = toChartNumber(
+        point.predictedSales
+        ?? point.forecast
+        ?? ((point.isPrediction || isLegacySingleForecast) ? point.sales : null),
+      );
+      const actualSales = toChartNumber(
+        point.actualSales
+        ?? ((!point.isPrediction && !isLegacySingleForecast) ? point.sales : null),
+      );
+
+      return {
+        date: point.date,
+        sales: actualSales,
+        forecast: predictedSales,
+        revenue: 0,
+      };
+    });
   }, [selectedSeries]);
 
   useEffect(() => {
@@ -356,9 +373,7 @@ export function OverviewPage({ data }: { data: DashboardData }) {
               <div>
                 <CardTitle>판매 예측 그래프</CardTitle>
                 <CardDescription>
-                  {forecastWindow
-                    ? `${forecastWindow.label} 동안 선택한 상품의 예상 판매량입니다.`
-                    : "선택한 상품의 일별 예상 판매량입니다."}
+                  최근 실제 판매량과 다음 날짜 AI 예측 판매량을 같은 그래프에서 확인합니다.
                 </CardDescription>
               </div>
               <div className="w-full xl:w-[300px]">
@@ -370,7 +385,7 @@ export function OverviewPage({ data }: { data: DashboardData }) {
                         {selectedSeries.itemName}
                       </p>
                       <p className="mt-1.5 text-xs font-semibold text-slate-400">
-                        예상 판매량 {formatNumber(selectedSeries.forecastQty)}개 · 전체 {forecastDailySeries.length}개 상품
+                        다음날 예측 {formatNumber(selectedSeries.forecastQty)}개 · 전체 {forecastDailySeries.length}개 상품
                       </p>
                     </div>
                     <ChevronDown className="h-4 w-4 shrink-0 text-blue-700" aria-hidden="true" />
@@ -393,8 +408,8 @@ export function OverviewPage({ data }: { data: DashboardData }) {
           <div className="px-6 pb-6">
             <SalesTrendChart
               data={selectedChartData}
-              salesName="일별 예상 판매"
-              forecastName="기간 평균"
+              salesName="기존 판매량"
+              forecastName="AI 예측량"
             />
           </div>
         </Card>

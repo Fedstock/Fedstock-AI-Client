@@ -20,6 +20,13 @@ npm install
 npm run dev
 ```
 
+로컬 exe FastAPI와 중앙 서버 주소는 환경변수로 분리합니다.
+
+```bash
+VITE_LOCAL_API_URL=http://localhost:8000
+VITE_CENTRAL_API_URL=https://fadstock.org
+```
+
 터미널에 표시되는 Vite 로컬 URL(보통 아래 주소)을 브라우저에서 엽니다:
 
 ```bash

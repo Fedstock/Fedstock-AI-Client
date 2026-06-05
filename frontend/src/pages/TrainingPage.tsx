@@ -50,6 +50,7 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const hasPredictedRef = useRef(false);
   const onTrainingCompleteRef = useRef(onTrainingComplete);
   onTrainingCompleteRef.current = onTrainingComplete;
+  const centralHealth = localState?.centralHealth;
 
   // Auto-predict when training transitions to "done" and a pending file exists
   useEffect(() => {
@@ -202,6 +203,14 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
               <div className="rounded-2xl bg-slate-50 p-4">
                 <p className="text-xs font-medium text-slate-400">중앙 백엔드</p>
                 <p className="mt-1 break-all text-sm font-semibold text-slate-900">{localState?.centralBackend ?? trainingStatus.centralBackend ?? "-"}</p>
+                <div className="mt-3 flex items-center gap-2">
+                  <Badge tone={centralHealth?.ok ? "success" : centralHealth ? "danger" : "neutral"}>
+                    {centralHealth?.ok ? "health 정상" : centralHealth ? "health 실패" : "확인 전"}
+                  </Badge>
+                  {centralHealth?.statusCode ? (
+                    <span className="text-xs font-medium text-slate-400">HTTP {centralHealth.statusCode}</span>
+                  ) : null}
+                </div>
               </div>
               <div className="rounded-2xl bg-slate-50 p-4">
                 <p className="text-xs font-medium text-slate-400">현재 클라이언트</p>

@@ -27,21 +27,34 @@ client/
 로컬 POS 백엔드는 점주가 CSV 형식의 판매 데이터를 업로드하면 로컬 LSTM 모델을 통해 실시간 예측 및 안전재고 계산 결과를 UI에 반환하는 역할을 수행합니다.
 
 ```bash
-# client 디렉토리로 이동
-cd client
+# Fedstock-AI-Client 디렉토리로 이동
+cd Fedstock-AI-Client
+
+# 중앙 서버 기본값은 https://fadstock.org 입니다.
+# 로컬 중앙 서버를 붙일 때만 아래처럼 덮어씁니다.
+# export CENTRAL_BACKEND_URL=http://localhost:8100
 
 # FastAPI 개발 서버 실행 (Working directory는 반드시 client로 설정)
 uvicorn app.main:app --reload --port 8000
 ```
 - API Health Check: `http://localhost:8000/health`
 - CSV 분석 엔드포인트: `http://localhost:8000/analyze-csv`
+- 로컬 학습 시작: `http://localhost:8000/start-training`
+- 학습 상태 조회: `http://localhost:8000/training-status`
+- 로컬 상태 조회: `http://localhost:8000/local-state`
+
+로컬 FastAPI가 중앙 서버에 호출하는 API는 다음과 같습니다.
+
+- `GET /health`
+- `POST /clients/register`
+- `GET /clients/{client_id}/fl-model`
 
 ### 2. 점주용 대시보드 UI (Frontend) 실행
 Vite 기반의 React 대시보드 애플리케이션으로, 점주가 오늘 요약, 재고 점검, 발주 추천 등을 직관적으로 볼 수 있게 지원합니다.
 
 ```bash
 # frontend 디렉토리로 이동
-cd client/frontend
+cd Fedstock-AI-Client/frontend
 
 # 패키지 설치
 npm install
@@ -50,6 +63,8 @@ npm install
 npm run dev
 ```
 - 브라우저 접속: `http://localhost:5173` 또는 `http://localhost:5174` (FastAPI 백엔드가 8000 포트에서 구동되는지 확인 요망)
+- 프론트 로컬 API 기본값: `VITE_LOCAL_API_URL=http://localhost:8000`
+- 프론트 중앙 API 기본값: `VITE_CENTRAL_API_URL=https://fadstock.org`
 
 ---
 

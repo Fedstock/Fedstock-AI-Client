@@ -32,7 +32,7 @@ LOCAL_OUTPUT_DIR = ROOT_DIR / "outputs" / "local_training"
 SYNCED_MODEL_DIR = LOCAL_OUTPUT_DIR / "synced_models"
 
 FLOWER_SERVER = os.getenv("FLOWER_SERVER", "localhost:8080")
-CENTRAL_BACKEND_URL = os.getenv("CENTRAL_BACKEND_URL", "http://localhost:8100").rstrip("/")
+CENTRAL_BACKEND_URL = os.getenv("CENTRAL_BACKEND_URL", "https://fadstock.org").rstrip("/")
 CLIENT_MODEL_DIR = RUN_DIR / "models" / "clients"
 CONFIG_PATH = RUN_DIR / "config.json"
 
@@ -424,6 +424,24 @@ def _encode_multipart_formdata(
     return b"".join(chunks), boundary
 
 
+def _get_central_health() -> dict[str, Any]:
+    request = urllib.request.Request(
+        url=f"{CENTRAL_BACKEND_URL}/health",
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            return {"ok": True, "statusCode": response.status, "payload": payload}
+    except urllib.error.HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "statusCode": exc.code, "message": message}
+    except urllib.error.URLError as exc:
+        return {"ok": False, "statusCode": None, "message": str(exc.reason)}
+    except Exception as exc:
+        return {"ok": False, "statusCode": None, "message": str(exc)}
+
+
 def _post_to_central_backend(
     client_id: str,
     model_path: Path,
@@ -460,7 +478,7 @@ def _post_to_central_backend(
 
 def _download_effective_model(client_id: str) -> Path:
     request = urllib.request.Request(
-        url=f"{CENTRAL_BACKEND_URL}/clients/{client_id}/effective-model",
+        url=f"{CENTRAL_BACKEND_URL}/clients/{client_id}/fl-model",
         method="GET",
     )
     try:
@@ -635,6 +653,7 @@ def _local_state_payload() -> dict[str, Any]:
     return {
         "flowerServer": FLOWER_SERVER,
         "centralBackend": CENTRAL_BACKEND_URL,
+        "centralHealth": _get_central_health(),
         "runDir": str(RUN_DIR),
         "selectedFeatures": SELECTED_FEATURES,
         "modelDirExists": CLIENT_MODEL_DIR.exists(),
@@ -735,6 +754,47 @@ def _trend_from_predictions(source: pd.DataFrame, historical_predictions: pd.Dat
     ]
 
 
+def _daily_actual_forecast_points(
+    source: pd.DataFrame,
+    client_id: str,
+    item_id: str,
+    forecast_qty: float,
+    forecast_date: pd.Timestamp,
+) -> list[dict[str, Any]]:
+    window_start = forecast_date - pd.Timedelta(days=6)
+    window_dates = [window_start + pd.Timedelta(days=offset) for offset in range(7)]
+    item_history = source[
+        (source["client_id"].astype(str) == str(client_id))
+        & (source["item_id"].astype(str) == str(item_id))
+    ].copy()
+
+    actual_by_date: dict[pd.Timestamp, float] = {}
+    if not item_history.empty:
+        item_history["date_key"] = item_history["sale_date"].dt.normalize()
+        actual_by_date = {
+            pd.Timestamp(date_key): float(sales)
+            for date_key, sales in item_history.groupby("date_key")["sales"].sum().items()
+        }
+
+    points = []
+    forecast_date_key = forecast_date.normalize()
+    for date in window_dates:
+        date_key = date.normalize()
+        actual_sales = actual_by_date.get(date_key)
+        point: dict[str, Any] = {
+            "date": date.strftime("%m/%d"),
+            "isoDate": date.strftime("%Y-%m-%d"),
+            "actualSales": round(actual_sales, 1) if actual_sales is not None else None,
+            "predictedSales": None,
+            "isPrediction": bool(date_key == forecast_date_key),
+        }
+        if date_key == forecast_date_key:
+            point["predictedSales"] = round(float(forecast_qty), 1)
+        points.append(point)
+
+    return points
+
+
 def _build_dashboard(
     file_name: str,
     source: pd.DataFrame,
@@ -786,13 +846,13 @@ def _build_dashboard(
             **item,
             "forecastQty": round(forecast_qty, 1),
             "forecastHorizonDays": 1,
-            "points": [
-                {
-                    "date": forecast_date.strftime("%m/%d"),
-                    "isoDate": forecast_date.strftime("%Y-%m-%d"),
-                    "sales": round(forecast_qty, 1),
-                }
-            ],
+            "points": _daily_actual_forecast_points(
+                source=source,
+                client_id=client_id,
+                item_id=raw_item_id,
+                forecast_qty=forecast_qty,
+                forecast_date=forecast_date,
+            ),
         })
         top_products.append({
             **item,

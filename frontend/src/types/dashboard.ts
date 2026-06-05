@@ -30,8 +30,8 @@ export type Metric = {
 
 export type SalesTrendPoint = {
   date: string;
-  sales: number;
-  forecast: number;
+  sales: number | null;
+  forecast: number | null;
   revenue: number;
 };
 
@@ -74,7 +74,11 @@ export type ForecastWindow = {
 export type ForecastDailyPoint = {
   date: string;
   isoDate: string;
-  sales: number;
+  sales?: number | null;
+  actualSales?: number | null;
+  predictedSales?: number | null;
+  forecast?: number | null;
+  isPrediction?: boolean;
 };
 
 export type ForecastDailySeries = {
@@ -183,6 +187,12 @@ export type TrainingStatus = {
 export type LocalState = {
   flowerServer: string;
   centralBackend: string;
+  centralHealth?: {
+    ok: boolean;
+    statusCode?: number | null;
+    payload?: Record<string, unknown> | null;
+    message?: string | null;
+  };
   runDir: string;
   selectedFeatures: string[];
   modelDirExists: boolean;

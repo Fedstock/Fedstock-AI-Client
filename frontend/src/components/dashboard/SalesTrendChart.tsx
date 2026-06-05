@@ -23,10 +23,15 @@ export function SalesTrendChart({
   salesName = "실제 판매",
   forecastName = "예상 판매",
 }: SalesTrendChartProps) {
-  const salesValues = data.map((point) => Number(point.sales)).filter(Number.isFinite);
+  const toFiniteNumber = (value: number | null | undefined) => (
+    typeof value === "number" && Number.isFinite(value) ? value : null
+  );
+  const salesValues = data
+    .map((point) => toFiniteNumber(point.sales))
+    .filter((value): value is number => value !== null);
   const allValues = data
-    .flatMap((point) => [Number(point.sales), Number(point.forecast)])
-    .filter(Number.isFinite);
+    .flatMap((point) => [toFiniteNumber(point.sales), toFiniteNumber(point.forecast)])
+    .filter((value): value is number => value !== null);
   const minSales = salesValues.length ? Math.min(...salesValues) : 0;
   const maxSales = salesValues.length ? Math.max(...salesValues) : 0;
   const minValue = allValues.length ? Math.min(...allValues) : 0;
@@ -67,20 +72,22 @@ export function SalesTrendChart({
           tickCount={4}
           tickFormatter={(value) => formatNumber(Number(value))}
         />
-        <ReferenceLine
-          y={maxSales}
-          stroke="#2563EB"
-          strokeDasharray="3 5"
-          strokeOpacity={0.44}
-          label={{
-            value: `최대 ${formatNumber(maxSales)}개`,
-            position: "insideTopRight",
-            fill: "#2563EB",
-            fontSize: 12,
-            fontWeight: 700,
-          }}
-        />
-        {maxSales !== minSales ? (
+        {salesValues.length ? (
+          <ReferenceLine
+            y={maxSales}
+            stroke="#2563EB"
+            strokeDasharray="3 5"
+            strokeOpacity={0.44}
+            label={{
+              value: `최대 ${formatNumber(maxSales)}개`,
+              position: "insideTopRight",
+              fill: "#2563EB",
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          />
+        ) : null}
+        {salesValues.length && maxSales !== minSales ? (
           <ReferenceLine
             y={minSales}
             stroke="#F97316"
@@ -112,6 +119,7 @@ export function SalesTrendChart({
           fillOpacity={1}
           strokeWidth={2.25}
           dot={false}
+          connectNulls={false}
           activeDot={{ r: 5, strokeWidth: 3, fill: "#FFFFFF", stroke: "#3B82F6" }}
           isAnimationActive
         />
@@ -125,7 +133,8 @@ export function SalesTrendChart({
           strokeOpacity={0.62}
           strokeWidth={2}
           strokeDasharray="4 6"
-          dot={false}
+          dot={{ r: 4, strokeWidth: 2, fill: "#FFFFFF", stroke: "#94A3B8" }}
+          connectNulls={false}
           activeDot={{ r: 4, strokeWidth: 2, fill: "#FFFFFF", stroke: "#94A3B8" }}
           isAnimationActive
         />
