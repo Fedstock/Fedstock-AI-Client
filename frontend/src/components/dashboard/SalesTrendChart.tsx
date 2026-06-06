@@ -18,6 +18,11 @@ type SalesTrendChartProps = {
   forecastName?: string;
 };
 
+type EnhancedSalesTrendPoint = SalesTrendPoint & {
+  forecastBridge?: number | null;
+  showForecastBridgeTooltip?: boolean;
+};
+
 export function SalesTrendChart({
   data,
   salesName = "실제 판매",
@@ -32,6 +37,29 @@ export function SalesTrendChart({
   const allValues = data
     .flatMap((point) => [toFiniteNumber(point.sales), toFiniteNumber(point.forecast)])
     .filter((value): value is number => value !== null);
+  const lastSalesIndex = data.reduce(
+    (latestIndex, point, index) => (toFiniteNumber(point.sales) !== null ? index : latestIndex),
+    -1,
+  );
+  const forecastIndex = data.findIndex(
+    (point, index) => index > lastSalesIndex && toFiniteNumber(point.forecast) !== null,
+  );
+  const chartData: EnhancedSalesTrendPoint[] = data.map((point, index) => {
+    const sales = toFiniteNumber(point.sales);
+    const forecast = toFiniteNumber(point.forecast);
+    const forecastBridge =
+      index === lastSalesIndex
+        ? sales
+        : index === forecastIndex
+          ? forecast
+          : null;
+
+    return {
+      ...point,
+      forecastBridge,
+      showForecastBridgeTooltip: index === forecastIndex,
+    };
+  });
   const minSales = salesValues.length ? Math.min(...salesValues) : 0;
   const maxSales = salesValues.length ? Math.max(...salesValues) : 0;
   const minValue = allValues.length ? Math.min(...allValues) : 0;
@@ -39,10 +67,14 @@ export function SalesTrendChart({
   const span = Math.max(maxValue - minValue, maxValue * 0.18, 1);
   const domainMin = Math.max(0, Math.floor((minValue - span * 0.24) * 10) / 10);
   const domainMax = Math.ceil((maxValue + span * 0.24) * 10) / 10;
+  const ForecastDot = ({ cx, cy, payload }: { cx?: number; cy?: number; payload?: EnhancedSalesTrendPoint }) => {
+    if (!payload?.showForecastBridgeTooltip || cx == null || cy == null) return <g />;
+    return <circle cx={cx} cy={cy} r={4.5} fill="#FFFFFF" stroke="#10B981" strokeWidth={2.5} />;
+  };
 
   return (
     <ResponsiveContainer width="100%" height={320}>
-      <AreaChart data={data} margin={{ top: 26, right: 18, left: 0, bottom: 0 }}>
+      <AreaChart data={chartData} margin={{ top: 26, right: 18, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.22} />
@@ -50,8 +82,9 @@ export function SalesTrendChart({
             <stop offset="100%" stopColor="#3B82F6" stopOpacity={0} />
           </linearGradient>
           <linearGradient id="forecastTrendGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#CBD5E1" stopOpacity={0.08} />
-            <stop offset="100%" stopColor="#CBD5E1" stopOpacity={0} />
+            <stop offset="0%" stopColor="#10B981" stopOpacity={0.24} />
+            <stop offset="55%" stopColor="#10B981" stopOpacity={0.09} />
+            <stop offset="100%" stopColor="#10B981" stopOpacity={0} />
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke="#EEF2F7" strokeWidth={1} />
@@ -107,6 +140,9 @@ export function SalesTrendChart({
           content={
             <ChartTooltip
               valueFormatter={(value) => `${formatNumber(Number(value))}개`}
+              payloadFilter={(item) => (
+                item.dataKey !== "forecastBridge" || item.payload?.showForecastBridgeTooltip === true
+              )}
             />
           }
         />
@@ -125,17 +161,16 @@ export function SalesTrendChart({
         />
         <Area
           type="monotone"
-          dataKey="forecast"
+          dataKey="forecastBridge"
           name={forecastName}
-          stroke="#94A3B8"
+          stroke="#10B981"
           fill="url(#forecastTrendGradient)"
           fillOpacity={1}
-          strokeOpacity={0.62}
-          strokeWidth={2}
-          strokeDasharray="4 6"
-          dot={{ r: 4, strokeWidth: 2, fill: "#FFFFFF", stroke: "#94A3B8" }}
+          strokeOpacity={0.95}
+          strokeWidth={2.5}
+          dot={ForecastDot}
           connectNulls={false}
-          activeDot={{ r: 4, strokeWidth: 2, fill: "#FFFFFF", stroke: "#94A3B8" }}
+          activeDot={{ r: 5, strokeWidth: 3, fill: "#FFFFFF", stroke: "#10B981" }}
           isAnimationActive
         />
       </AreaChart>

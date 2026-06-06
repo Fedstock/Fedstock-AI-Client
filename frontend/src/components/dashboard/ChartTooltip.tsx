@@ -5,6 +5,7 @@ type TooltipPayload = {
   value?: number | string;
   color?: string;
   dataKey?: string;
+  payload?: Record<string, unknown>;
 };
 
 type ChartTooltipProps = {
@@ -13,6 +14,7 @@ type ChartTooltipProps = {
   payload?: TooltipPayload[];
   valueFormatter?: (value: number | string, name?: string, dataKey?: string) => string;
   labelFormatter?: (label?: string) => string;
+  payloadFilter?: (item: TooltipPayload) => boolean;
 };
 
 export function ChartTooltip({
@@ -21,14 +23,16 @@ export function ChartTooltip({
   payload,
   valueFormatter,
   labelFormatter,
+  payloadFilter,
 }: ChartTooltipProps) {
-  if (!active || !payload?.length) return null;
+  const visiblePayload = payloadFilter ? payload?.filter(payloadFilter) : payload;
+  if (!active || !visiblePayload?.length) return null;
 
   return (
     <div className="rounded-xl border border-gray-100 bg-white px-4 py-3 text-xs shadow-[0_14px_36px_rgba(15,23,42,0.12)]">
       {label ? <p className="mb-2 font-medium text-[#111827]">{labelFormatter ? labelFormatter(label) : label}</p> : null}
       <div className="space-y-1.5">
-        {payload.map((item) => (
+        {visiblePayload.map((item) => (
           <div key={`${item.dataKey ?? item.name}`} className="flex min-w-[144px] items-center justify-between gap-4">
             <span className="flex items-center gap-2 text-[#6B7280]">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color ?? "#94A3B8" }} />
