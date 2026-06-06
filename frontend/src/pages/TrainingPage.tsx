@@ -12,8 +12,27 @@ import {
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
+import { RunStatusModal, type RunStatusStep } from "../components/ui/RunStatusModal";
 import { analyzeCsvWithAi, fetchLocalState, fetchTrainingStatus, startTrainingWithAi } from "../lib/ai-api";
 import type { CsvStatus, DashboardData, LocalState, TrainingStatus } from "../types/dashboard";
+
+type RunStageId = "upload" | "preprocess" | "importance" | "localTraining" | "centralSync" | "prediction" | "complete";
+
+type RunModalError = {
+  stageId: RunStageId;
+  title: string;
+  description: string;
+};
+
+const runSteps: RunStatusStep[] = [
+  { id: "upload", label: "CSV 접수", description: "판매 이력 파일을 로컬 FastAPI에 전달합니다." },
+  { id: "preprocess", label: "데이터 전처리", description: "학습에 필요한 날짜, 상품, feature를 준비합니다." },
+  { id: "importance", label: "중요도 생성", description: "중앙 클러스터링에 쓸 noisy importance를 만듭니다." },
+  { id: "localTraining", label: "로컬 학습", description: "이 클라이언트의 개인 모델과 noisy importance를 생성합니다." },
+  { id: "centralSync", label: "중앙 동기화", description: "로컬 모델을 중앙 서버에 보내고 클러스터 모델을 받습니다." },
+  { id: "prediction", label: "판매 예측", description: "같은 CSV와 최신 로컬 모델로 다음날 판매량을 계산합니다." },
+  { id: "complete", label: "결과 이동", description: "판매 예측 결과 화면을 준비합니다." },
+];
 
 function statusTone(status: TrainingStatus["status"]) {
   if (status === "done") return "success";
@@ -27,6 +46,52 @@ function statusLabel(status: TrainingStatus["status"]) {
   if (status === "running") return "진행 중";
   if (status === "error") return "오류";
   return "대기";
+}
+
+function stageIdFromTrainingStatus(status: TrainingStatus): RunStageId {
+  if (status.stage === "preprocess") return "preprocess";
+  if (status.stage === "importance") return "importance";
+  if (status.stage === "local_training") return "localTraining";
+  if (status.stage === "central_register" || status.stage === "central_download") return "centralSync";
+  if (status.stage === "done") return "prediction";
+
+  if (status.message.includes("전처리")) return "preprocess";
+  if (status.message.includes("importance")) return "importance";
+  if (status.message.includes("사전학습") || status.message.includes("로컬 학습")) return "localTraining";
+  if (status.message.includes("중앙") || status.message.includes("집계")) return "centralSync";
+  return "localTraining";
+}
+
+function stageLabel(stageId: RunStageId) {
+  if (stageId === "upload") return "CSV 접수";
+  if (stageId === "preprocess") return "데이터 전처리";
+  if (stageId === "importance") return "noisy importance 생성";
+  if (stageId === "localTraining") return "로컬 학습";
+  if (stageId === "centralSync") return "중앙 서버 동기화";
+  if (stageId === "prediction") return "판매 예측 계산";
+  return "결과 화면 이동";
+}
+
+function errorDescription(stageId: RunStageId) {
+  if (stageId === "upload") return "CSV를 로컬 FastAPI에 전달하는 중 오류가 발생했습니다.";
+  if (stageId === "preprocess") return "CSV를 학습 가능한 형태로 정리하는 중 오류가 발생했습니다.";
+  if (stageId === "importance") return "로컬 feature importance를 생성하는 중 오류가 발생했습니다.";
+  if (stageId === "localTraining") return "개인 모델 .pt를 만드는 로컬 학습 중 오류가 발생했습니다.";
+  if (stageId === "centralSync") return "중앙 서버에 모델을 등록하거나 클러스터 모델을 받는 중 오류가 발생했습니다.";
+  if (stageId === "prediction") return "최신 로컬 모델로 다음날 판매량을 계산하는 중 오류가 발생했습니다.";
+  return "결과 화면을 준비하는 중 오류가 발생했습니다.";
+}
+
+function buildRunError(stageId: RunStageId): RunModalError {
+  return {
+    stageId,
+    title: `${stageLabel(stageId)}에서 오류 발생`,
+    description: errorDescription(stageId),
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 type TrainingPageProps = {
@@ -44,7 +109,13 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isTrainingAccepted, setIsTrainingAccepted] = useState(false);
+  const [hasObservedTrainingRun, setHasObservedTrainingRun] = useState(false);
+  const [runModalOpen, setRunModalOpen] = useState(false);
+  const [runStage, setRunStage] = useState<RunStageId>("upload");
+  const [runModalError, setRunModalError] = useState<RunModalError | null>(null);
+  const [runModalNotice, setRunModalNotice] = useState<string | null>(null);
+  const [isRunComplete, setIsRunComplete] = useState(false);
 
   const pendingFileRef = useRef<File | null>(null);
   const hasPredictedRef = useRef(false);
@@ -52,8 +123,11 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   onTrainingCompleteRef.current = onTrainingComplete;
   const centralHealth = localState?.centralHealth;
   const canPredictAfterTraining =
-    trainingStatus.status === "done" ||
-    (trainingStatus.status === "error" && Boolean(trainingStatus.latestModelPath));
+    isTrainingAccepted &&
+    hasObservedTrainingRun &&
+    !runModalError &&
+    !isRunComplete &&
+    (trainingStatus.status === "done" || (trainingStatus.status === "error" && Boolean(trainingStatus.latestModelPath)));
 
   // Continue to prediction once a local model exists, even if central sync is not ready yet.
   useEffect(() => {
@@ -63,19 +137,50 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
 
     hasPredictedRef.current = true;
     const file = pendingFileRef.current;
+    setRunStage("prediction");
     setIsPredicting(true);
-    setErrorMessage(null);
 
     analyzeCsvWithAi(file)
-      .then((result) => {
+      .then(async (result) => {
+        setRunStage("complete");
+        setIsRunComplete(true);
+        await sleep(850);
         onTrainingCompleteRef.current(result.status, result.data);
       })
       .catch((error: unknown) => {
-        setErrorMessage(error instanceof Error ? error.message : "예측에 실패했습니다. 예측만 실행에서 직접 파일을 올려주세요.");
+        void error;
+        setRunModalError(buildRunError("prediction"));
         setIsPredicting(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPredictAfterTraining]);
+
+  useEffect(() => {
+    if (!isTrainingAccepted || !pendingFileRef.current || runModalError || isRunComplete) return;
+
+    if (trainingStatus.status === "running") {
+      setHasObservedTrainingRun(true);
+      setRunStage(stageIdFromTrainingStatus(trainingStatus));
+      return;
+    }
+
+    if (!hasObservedTrainingRun) return;
+
+    if (trainingStatus.status === "done") {
+      setRunStage("prediction");
+      return;
+    }
+
+    if (trainingStatus.status === "error") {
+      const failedStage = stageIdFromTrainingStatus(trainingStatus);
+      if (trainingStatus.latestModelPath) {
+        setRunStage("prediction");
+        setRunModalNotice(`${stageLabel(failedStage)}에서 오류 발생. 로컬 모델로 예측을 계속합니다.`);
+        return;
+      }
+      setRunModalError(buildRunError(failedStage));
+    }
+  }, [hasObservedTrainingRun, isRunComplete, isTrainingAccepted, runModalError, trainingStatus]);
 
   const refreshState = async () => {
     const [state, status] = await Promise.all([fetchLocalState(), fetchTrainingStatus()]);
@@ -92,11 +197,13 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
         if (!cancelled) {
           setLocalState(state);
           setTrainingStatus(status);
-          setErrorMessage(null);
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error instanceof Error ? error.message : "로컬 상태를 불러오지 못했습니다.");
+          void error;
+          if (isTrainingAccepted && pendingFileRef.current) {
+            setRunModalError(buildRunError("preprocess"));
+          }
         }
       } finally {
         if (!cancelled) {
@@ -120,24 +227,65 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const handleTrainingFile = async (file: File) => {
     pendingFileRef.current = file;
     hasPredictedRef.current = false;
+    setIsTrainingAccepted(false);
+    setHasObservedTrainingRun(false);
+    setRunModalOpen(true);
+    setRunStage("upload");
+    setRunModalError(null);
+    setRunModalNotice(null);
+    setIsRunComplete(false);
     setIsStarting(true);
-    setErrorMessage(null);
     try {
       await startTrainingWithAi(file);
+      setIsTrainingAccepted(true);
+      setRunStage("preprocess");
       await refreshState();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "로컬 학습을 시작하지 못했습니다.");
+      void error;
+      setRunModalError(buildRunError("upload"));
     } finally {
       setIsStarting(false);
     }
   };
 
+  const closeRunModal = () => {
+    setRunModalOpen(false);
+    setRunModalError(null);
+    setRunModalNotice(null);
+    setIsTrainingAccepted(false);
+    setHasObservedTrainingRun(false);
+    pendingFileRef.current = null;
+  };
+
   const activeImportance = trainingStatus.latestImportance.length
     ? trainingStatus.latestImportance
     : localState?.latestImportance ?? [];
+  const modalMode = runModalError ? "error" : isRunComplete ? "success" : "loading";
+  const modalTitle = runModalError
+    ? runModalError.title
+    : isRunComplete
+      ? "예측 결과 준비 완료"
+      : `${stageLabel(runStage)} 진행 중`;
+  const modalDescription = runModalError
+    ? runModalError.description
+    : isRunComplete
+      ? "잠시 후 판매 예측 결과 화면으로 이동합니다."
+      : runStage === "prediction"
+        ? "업로드한 CSV와 최신 로컬 모델로 2014-10-22 판매량을 예측하고 있습니다."
+        : "CSV 한 번으로 로컬 학습부터 다음날 예측까지 순서대로 실행하고 있습니다.";
 
   return (
     <div className="mx-auto w-full max-w-[1080px] space-y-6">
+      <RunStatusModal
+        open={runModalOpen}
+        mode={modalMode}
+        title={modalTitle}
+        description={modalDescription}
+        steps={runSteps}
+        activeStepId={runModalError?.stageId ?? runStage}
+        notice={runModalNotice}
+        onClose={runModalError ? closeRunModal : undefined}
+      />
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <Card>
           <CardHeader>
@@ -165,10 +313,6 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
               <div className="mt-4 flex items-center gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
                 <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                 로컬 모델 생성 완료. 같은 CSV로 판매 예측을 계산하는 중입니다…
-              </div>
-            ) : errorMessage ? (
-              <div className="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {errorMessage}
               </div>
             ) : null}
             <input

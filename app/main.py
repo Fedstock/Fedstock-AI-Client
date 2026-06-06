@@ -541,7 +541,7 @@ def _run_fl_training(df: pd.DataFrame) -> None:
             _TRAINING_STATE = current
 
     try:
-        _set("running", "데이터 전처리 중...", startedAt=_timestamp())
+        _set("running", "데이터 전처리 중...", startedAt=_timestamp(), stage="preprocess")
 
         df = df.dropna(subset=SELECTED_FEATURES + ["sales"]).reset_index(drop=True)
         if len(df) <= SEQ_LEN * 2:
@@ -595,12 +595,13 @@ def _run_fl_training(df: pd.DataFrame) -> None:
         _set(
             "running",
             "로컬 noisy importance 생성 완료. 로컬 사전학습을 시작합니다.",
+            stage="importance",
             clientId=client_id,
             latestImportancePath=str(importance_path),
             latestImportance=importance_payload["topFeatures"],
         )
 
-        _set("running", f"로컬 사전학습 진행 중 ({LOCAL_PRETRAIN_EPOCHS} epochs)...")
+        _set("running", f"로컬 사전학습 진행 중 ({LOCAL_PRETRAIN_EPOCHS} epochs)...", stage="local_training")
         client._train_epochs(LOCAL_PRETRAIN_EPOCHS)
         model_dir = LOCAL_OUTPUT_DIR / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -610,6 +611,7 @@ def _run_fl_training(df: pd.DataFrame) -> None:
         _set(
             "running",
             "로컬 학습 완료. 중앙 서버에 가중치 업로드 중...",
+            stage="central_register",
             latestModelPath=str(model_path),
         )
 
@@ -619,11 +621,18 @@ def _run_fl_training(df: pd.DataFrame) -> None:
             importance_path=importance_path,
             sample_weight=len(X_train_seq),
         )
+        _set(
+            "running",
+            "중앙 서버 등록 완료. 클러스터 집계 모델을 다운로드 중...",
+            stage="central_download",
+            latestModelPath=str(model_path),
+        )
         synced_model_path = _download_effective_model(client_id)
         _MODEL_CACHE.clear()
         _set(
             "done",
             "중앙 서버 동기화 및 집계 모델 수신 완료",
+            stage="done",
             latestModelPath=str(synced_model_path),
             centralSync={
                 "clientId": client_id,

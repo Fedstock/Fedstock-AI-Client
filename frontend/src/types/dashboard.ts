@@ -156,6 +156,7 @@ export type DashboardData = {
 
 export type TrainingStatus = {
   status: "idle" | "running" | "done" | "error";
+  stage?: "preprocess" | "importance" | "local_training" | "central_register" | "central_download" | "done" | string;
   message: string;
   startedAt?: string | null;
   updatedAt?: string | null;
