@@ -256,8 +256,8 @@ export function CsvUploadPage({
           <div className="grid gap-4">
             <UploadTarget
               icon={Upload}
-              title="판매 이력 파일"
-              description="판매 이력 CSV를 올리면 마지막 날짜 다음 날의 상품별 예상 판매량을 계산합니다."
+              title="예측용 판매 이력 파일"
+              description="학습을 다시 하지 않고 현재 로컬 모델로 마지막 날짜 다음 날의 상품별 예상 판매량만 계산합니다."
               buttonLabel={isAnalyzing ? "계산 중..." : "파일 선택"}
               selectedFileName={csvStatus.fileName}
               disabled={isAnalyzing}
@@ -279,7 +279,10 @@ export function CsvUploadPage({
             accept=".csv,text/csv"
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file) void handleForecastFile(file);
+              if (file) {
+                void handleForecastFile(file);
+                event.currentTarget.value = "";
+              }
             }}
           />
         </Card>
@@ -288,12 +291,12 @@ export function CsvUploadPage({
           <CardHeader>
             <div>
               <CardTitle>파일 요약</CardTitle>
-              <CardDescription>예상 판매량 계산에 사용된 파일입니다.</CardDescription>
+              <CardDescription>예측 계산에 사용된 파일입니다.</CardDescription>
             </div>
             <Database className="h-5 w-5 text-[#6B7280]" aria-hidden="true" />
           </CardHeader>
           {csvStatus.state === "empty" ? (
-            <EmptyState icon={FileSpreadsheet} title="아직 올린 파일이 없습니다" description="판매 이력 파일을 올리면 자료 개수, 상품 수, 기간이 표시됩니다." />
+            <EmptyState icon={FileSpreadsheet} title="아직 올린 파일이 없습니다" description="예측용 판매 이력 파일을 올리면 자료 개수, 상품 수, 기간이 표시됩니다." />
           ) : (
             <div className="space-y-4">
               <div>

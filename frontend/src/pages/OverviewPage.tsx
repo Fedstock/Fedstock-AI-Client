@@ -337,7 +337,7 @@ export function OverviewPage({ data }: { data: DashboardData }) {
         <EmptyState
           icon={Upload}
           title="판매 이력 파일이 필요합니다"
-          description="자료 올리기에서 판매 이력 CSV를 선택하면 예측 결과가 표시됩니다."
+          description="CSV 실행에서 판매 이력 CSV를 선택하면 학습 후 예측 결과가 표시됩니다."
         />
       </div>
     );

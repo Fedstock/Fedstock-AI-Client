@@ -15,16 +15,16 @@ import type { CsvStatus, DashboardData, PageDefinition, PageId } from "./types/d
 const pages: PageDefinition[] = [
   {
     id: "training",
-    label: "로컬 학습",
-    title: "로컬 학습",
-    subtitle: "이 매장의 로컬 학습과 중앙 서버 동기화 상태를 점검합니다.",
+    label: "CSV 실행",
+    title: "CSV 실행",
+    subtitle: "판매 이력 CSV 한 번으로 로컬 학습과 다음날 예측을 실행합니다.",
     icon: Cpu,
   },
   {
     id: "upload",
-    label: "자료 올리기",
-    title: "자료 올리기",
-    subtitle: "판매 이력 파일을 올리면 Fedstock이 예상 판매량을 계산합니다.",
+    label: "예측만 실행",
+    title: "예측만 실행",
+    subtitle: "이미 준비된 로컬 모델로 판매량 예측만 다시 계산합니다.",
     icon: Upload,
   },
   {
@@ -47,16 +47,16 @@ export default function App() {
 
     switch (activePage) {
       case "training":
-        return "로컬 사전학습, noisy importance 생성, 중앙 집계 모델 동기화 상태를 확인하세요.";
+        return "CSV 한 번으로 로컬 사전학습, noisy importance 생성, 다음날 예측까지 실행하세요.";
       case "upload":
         return hasAiResult
           ? "다음 날짜 판매 예측 결과가 준비됐습니다. 결과 화면에서 확인하세요."
-          : "판매 이력 파일을 올리면 마지막 날짜 다음 날의 예상 판매량을 계산합니다.";
+          : "학습 없이 현재 로컬 모델로 마지막 날짜 다음 날의 예상 판매량만 계산합니다.";
       case "overview":
       default:
         return hasAiResult
           ? "상품별 예상 판매량과 수요 흐름을 확인하세요."
-          : "자료 올리기에서 판매 이력 파일을 먼저 선택하세요.";
+          : "CSV 실행에서 판매 이력 파일을 먼저 선택하세요.";
     }
   }, [activePage, dashboardData]);
 

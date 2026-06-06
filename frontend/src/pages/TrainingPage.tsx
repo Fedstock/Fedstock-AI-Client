@@ -51,10 +51,13 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const onTrainingCompleteRef = useRef(onTrainingComplete);
   onTrainingCompleteRef.current = onTrainingComplete;
   const centralHealth = localState?.centralHealth;
+  const canPredictAfterTraining =
+    trainingStatus.status === "done" ||
+    (trainingStatus.status === "error" && Boolean(trainingStatus.latestModelPath));
 
-  // Auto-predict when training transitions to "done" and a pending file exists
+  // Continue to prediction once a local model exists, even if central sync is not ready yet.
   useEffect(() => {
-    if (trainingStatus.status !== "done") return;
+    if (!canPredictAfterTraining) return;
     if (!pendingFileRef.current) return;
     if (hasPredictedRef.current) return;
 
@@ -68,11 +71,11 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
         onTrainingCompleteRef.current(result.status, result.data);
       })
       .catch((error: unknown) => {
-        setErrorMessage(error instanceof Error ? error.message : "예측에 실패했습니다. 판매 예측 탭에서 직접 파일을 올려주세요.");
+        setErrorMessage(error instanceof Error ? error.message : "예측에 실패했습니다. 예측만 실행에서 직접 파일을 올려주세요.");
         setIsPredicting(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trainingStatus.status]);
+  }, [canPredictAfterTraining]);
 
   const refreshState = async () => {
     const [state, status] = await Promise.all([fetchLocalState(), fetchTrainingStatus()]);
@@ -139,19 +142,19 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>로컬 학습 실행</CardTitle>
-              <CardDescription>CSV를 업로드하면 이 매장의 로컬 사전학습과 중앙 서버 동기화를 시작합니다.</CardDescription>
+              <CardTitle>CSV 업로드 및 실행</CardTitle>
+              <CardDescription>한 번 업로드하면 로컬 학습 후 같은 파일로 다음날 판매량을 예측합니다.</CardDescription>
             </div>
             <FileUp className="h-5 w-5 text-slate-400" aria-hidden="true" />
           </CardHeader>
           <div className="rounded-[20px] bg-slate-50 p-5">
             <p className="text-sm leading-6 text-slate-600">
-              로컬 사전학습은 이 클라이언트 안에서 진행되고, 이후 noisy feature importance와 로컬 모델이 중앙으로 전송되어 집계 모델을 다시 받아옵니다.
+              로컬 사전학습은 이 클라이언트 안에서 진행됩니다. 중앙 동기화가 아직 준비되지 않아도 로컬 모델이 만들어지면 바로 예측 결과 화면으로 이동합니다.
             </p>
             <div className="mt-5 flex flex-wrap gap-3">
               <Button type="button" onClick={() => inputRef.current?.click()} disabled={isStarting || isPredicting}>
                 {isStarting ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileUp className="h-4 w-4" aria-hidden="true" />}
-                {isStarting ? "학습 시작 중" : "학습용 CSV 선택"}
+                {isStarting ? "실행 시작 중" : "CSV 선택"}
               </Button>
               <Button type="button" variant="outline" onClick={() => void refreshState()} disabled={isLoading || isPredicting}>
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
@@ -161,7 +164,7 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
             {isPredicting ? (
               <div className="mt-4 flex items-center gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
                 <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-                학습 완료. 최신 모델로 판매 예측을 계산하는 중입니다…
+                로컬 모델 생성 완료. 같은 CSV로 판매 예측을 계산하는 중입니다…
               </div>
             ) : errorMessage ? (
               <div className="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -177,6 +180,7 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
                 const file = event.target.files?.[0];
                 if (file) {
                   void handleTrainingFile(file);
+                  event.currentTarget.value = "";
                 }
               }}
             />
