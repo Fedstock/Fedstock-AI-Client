@@ -15,16 +15,16 @@ import type { CsvStatus, DashboardData, PageDefinition, PageId } from "./types/d
 const pages: PageDefinition[] = [
   {
     id: "training",
-    label: "CSV 실행",
-    title: "CSV 실행",
-    subtitle: "판매 이력 CSV 한 번으로 로컬 학습과 다음날 예측을 실행합니다.",
+    label: "판매 예측 실행",
+    title: "판매 예측 실행",
+    subtitle: "판매 이력 CSV 한 번으로 다음 날짜 예상 판매량을 계산합니다.",
     icon: Cpu,
   },
   {
     id: "upload",
-    label: "예측만 실행",
-    title: "예측만 실행",
-    subtitle: "이미 준비된 로컬 모델로 판매량 예측만 다시 계산합니다.",
+    label: "다시 계산",
+    title: "다시 계산",
+    subtitle: "판매 이력 파일로 예측 결과만 다시 계산합니다.",
     icon: Upload,
   },
   {
@@ -47,16 +47,16 @@ export default function App() {
 
     switch (activePage) {
       case "training":
-        return "CSV 한 번으로 로컬 사전학습, noisy importance 생성, 다음날 예측까지 실행하세요.";
+        return "판매 이력 파일을 올리면 다음 날짜 예상 판매량을 바로 확인할 수 있습니다.";
       case "upload":
         return hasAiResult
           ? "다음 날짜 판매 예측 결과가 준비됐습니다. 결과 화면에서 확인하세요."
-          : "학습 없이 현재 로컬 모델로 마지막 날짜 다음 날의 예상 판매량만 계산합니다.";
+          : "판매 이력 파일로 다음 날짜 예상 판매량을 다시 계산합니다.";
       case "overview":
       default:
         return hasAiResult
           ? "상품별 예상 판매량과 수요 흐름을 확인하세요."
-          : "CSV 실행에서 판매 이력 파일을 먼저 선택하세요.";
+          : "판매 예측 실행에서 판매 이력 파일을 먼저 선택하세요.";
     }
   }, [activePage, dashboardData]);
 

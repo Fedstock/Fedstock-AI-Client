@@ -35,6 +35,7 @@ FLOWER_SERVER = os.getenv("FLOWER_SERVER", "localhost:8080")
 CENTRAL_BACKEND_URL = os.getenv("CENTRAL_BACKEND_URL", "https://fadstock.org").rstrip("/")
 CLIENT_MODEL_DIR = RUN_DIR / "models" / "clients"
 CONFIG_PATH = RUN_DIR / "config.json"
+ITEM_MASTER_PATH = ROOT_DIR / "data" / "item_master.csv"
 
 SEQ_LEN = 14
 LOCAL_PRETRAIN_EPOCHS = 40
@@ -66,6 +67,35 @@ def _load_selected_features() -> list[str]:
 
 
 SELECTED_FEATURES = _load_selected_features()
+
+
+def _load_item_master() -> dict[str, dict[str, Any]]:
+    if not ITEM_MASTER_PATH.exists():
+        return {}
+
+    frame = pd.read_csv(ITEM_MASTER_PATH).fillna("")
+    if "item_id" not in frame.columns:
+        return {}
+
+    master: dict[str, dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        item_id = str(row["item_id"]).strip()
+        if not item_id:
+            continue
+        weather_tags = [
+            tag.strip()
+            for tag in str(row.get("weather_tags", "")).split("|")
+            if tag.strip()
+        ]
+        master[item_id] = {
+            "itemName": str(row.get("item_name_ko", "")).strip(),
+            "category": str(row.get("display_category", "")).strip(),
+            "weatherTags": weather_tags,
+        }
+    return master
+
+
+ITEM_MASTER = _load_item_master()
 
 
 app = FastAPI(title="Fedstock AI API", version="0.1.0")
@@ -134,7 +164,7 @@ def _validation_item(
     warning_message: str | None = None,
 ) -> dict[str, Any]:
     status = "passed" if ok else "failed"
-    message = "AI 분석 입력 확인" if ok else "AI 분석에 필요한 항목 누락"
+    message = "확인 완료" if ok else "예측에 필요한 항목 누락"
     if not ok and not required:
         status = "warning"
         message = warning_message or "없으면 백엔드에서 추정합니다."
@@ -206,7 +236,7 @@ def _prepare_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]
         raise HTTPException(
             status_code=400,
             detail={
-                "message": f"AI 모델 입력에 필요한 컬럼이 없습니다: {', '.join(missing)}",
+                "message": f"예측에 필요한 항목이 없습니다: {', '.join(missing)}",
                 "validation": validation,
             },
         )
@@ -227,7 +257,7 @@ def _prepare_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]
 
     prepared = prepared.dropna(subset=["item_id", "sale_date", "sales", "sell_price"])
     if prepared.empty:
-        raise HTTPException(status_code=400, detail="AI 분석에 사용할 수 있는 행이 없습니다.")
+        raise HTTPException(status_code=400, detail="예측에 사용할 수 있는 판매 기록이 없습니다.")
 
     prepared = prepared.sort_values(["item_id", "sale_date"]).reset_index(drop=True)
     prepared["dayofweek"] = prepared["sale_date"].dt.dayofweek
@@ -281,23 +311,23 @@ def _prepare_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]
     if stock_missing:
         issues.append({
             "severity": "warning",
-            "message": "업로드 파일에 현재 재고가 없어 AI 판매량 예측만 표시합니다. 재고 점검과 발주 추천은 current_stock 컬럼이 있을 때 계산됩니다.",
+            "message": "업로드 파일에 현재 재고 정보가 없어 판매량 예측만 표시합니다. 재고 정보가 포함되면 재고 점검과 발주 참고도 함께 볼 수 있습니다.",
         })
     dropped = len(prepared) - len(usable)
     if dropped > 0:
         issues.append({
             "severity": "warning",
-            "message": f"lag/rolling feature 생성을 위해 초기 {dropped:,}개 행은 AI 추론에서 제외했습니다.",
+            "message": f"상품별 판매 흐름을 안정적으로 계산하기 위해 초반 {dropped:,}개 기록은 예측 계산에서 제외했습니다.",
         })
     if usable.groupby("item_id").size().max() <= SEQ_LEN:
         raise HTTPException(
             status_code=400,
-            detail=f"AI 추론에는 lag/rolling feature 생성을 포함해 상품별 약 {SEQ_LEN + 29}일 이상의 판매 이력이 필요합니다.",
+            detail=f"예측하려면 상품별로 약 {SEQ_LEN + 29}일 이상의 판매 이력이 필요합니다.",
         )
 
     issues.append({
         "severity": "warning",
-        "message": "업로드된 CSV를 로컬 PA-CFL LSTM 모델로 추론했습니다. 프론트 계산값은 사용하지 않았습니다.",
+        "message": "업로드된 판매 이력을 기준으로 예측 결과를 계산했습니다.",
     })
     return usable, validation, issues, not stock_missing
 
@@ -324,7 +354,7 @@ def _choose_model_path(df: pd.DataFrame) -> Path:
 
     candidates = sorted(CLIENT_MODEL_DIR.glob("client_*.pt"))
     if not candidates:
-        raise HTTPException(status_code=500, detail="저장된 AI 모델(.pt)을 찾지 못했습니다.")
+        raise HTTPException(status_code=500, detail="예측에 필요한 준비 파일을 찾지 못했습니다.")
     return candidates[0]
 
 
@@ -336,7 +366,7 @@ def _load_model(model_path: Path) -> LightweightLSTM:
     if input_size != len(SELECTED_FEATURES):
         raise HTTPException(
             status_code=500,
-            detail=f"모델 입력 크기({input_size})와 선택 feature 수({len(SELECTED_FEATURES)})가 다릅니다.",
+            detail="예측 설정이 현재 파일과 맞지 않습니다.",
         )
 
     model = LightweightLSTM(input_size=input_size, hidden_size=hidden_size)
@@ -743,7 +773,7 @@ def _predict_sales(df: pd.DataFrame, fallback_model_path: Path) -> tuple[pd.Data
                 latest_rows.append(latest)
 
     if not latest_rows:
-        raise HTTPException(status_code=400, detail="AI 모델이 예측할 수 있는 상품 시퀀스가 없습니다.")
+        raise HTTPException(status_code=400, detail="예측할 수 있는 상품별 판매 이력이 없습니다.")
 
     return pd.DataFrame(historical_rows), pd.DataFrame(latest_rows), sorted(used_model_paths)
 
@@ -804,6 +834,20 @@ def _daily_actual_forecast_points(
     return points
 
 
+def _resolve_item_display(raw_item_id: str, uploaded_item_name: Any, uploaded_category: Any) -> dict[str, Any]:
+    master = ITEM_MASTER.get(raw_item_id, {})
+    uploaded_name = str(uploaded_item_name).strip() if uploaded_item_name is not None else ""
+    uploaded_category_text = str(uploaded_category).strip() if uploaded_category is not None else ""
+    item_name = uploaded_name if uploaded_name and uploaded_name != raw_item_id else master.get("itemName") or raw_item_id
+    category = master.get("category") or uploaded_category_text or "상품군 미확인"
+
+    return {
+        "itemName": item_name,
+        "category": category,
+        "weatherTags": master.get("weatherTags", []),
+    }
+
+
 def _build_dashboard(
     file_name: str,
     source: pd.DataFrame,
@@ -834,11 +878,13 @@ def _build_dashboard(
         trend = "up" if trend_gap > 8 else "down" if trend_gap < -8 else "stable"
         client_id = str(row.get("client_id", "default"))
         raw_item_id = str(row["item_id"])
-        category = str(row["category"])
+        display = _resolve_item_display(raw_item_id, row.get("item_name"), row.get("category"))
         item = {
             "itemId": f"{client_id}:{raw_item_id}" if client_id != "default" else raw_item_id,
-            "itemName": str(row["item_name"]),
-            "category": f"{client_id} · {category}" if client_id != "default" else category,
+            "itemName": display["itemName"],
+            "category": f"{client_id} · {display['category']}" if client_id != "default" else display["category"],
+            "rawItemId": raw_item_id,
+            "weatherTags": display["weatherTags"],
         }
         forecast_items.append({
             **item,

@@ -13,6 +13,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
+import { RunStatusModal } from "../components/ui/RunStatusModal";
 import type { CsvStatus, DashboardData, ValidationItem } from "../types/dashboard";
 import { analyzeCsvWithAi } from "../lib/ai-api";
 import { formatNumber } from "../lib/utils";
@@ -211,7 +212,7 @@ export function CsvUploadPage({
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
   const [isOverlayLeaving, setIsOverlayLeaving] = useState(false);
   const [loadingStepIndex, setLoadingStepIndex] = useState(0);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorModalOpen, setErrorModalOpen] = useState(false);
   const isAnalyzing = analysisState !== "idle";
 
   useEffect(() => {
@@ -231,7 +232,7 @@ export function CsvUploadPage({
     setAnalysisState("loading");
     setIsOverlayLeaving(false);
     setLoadingStepIndex(0);
-    setErrorMessage(null);
+    setErrorModalOpen(false);
     try {
       const result = await analyzeCsvWithAi(file);
       setLoadingStepIndex(loadingSteps.length - 1);
@@ -241,23 +242,37 @@ export function CsvUploadPage({
       await new Promise((resolve) => window.setTimeout(resolve, 360));
       onCsvLoaded(result.status, result.data);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "파일을 분석하지 못했습니다. 잠시 후 다시 시도하세요.");
+      void error;
       setIsOverlayLeaving(true);
       await new Promise((resolve) => window.setTimeout(resolve, 240));
       setAnalysisState("idle");
       setIsOverlayLeaving(false);
+      setErrorModalOpen(true);
     }
   };
 
   return (
     <div className="mx-auto w-full max-w-[1080px] space-y-6">
+      <RunStatusModal
+        open={errorModalOpen}
+        mode="error"
+        title="판매 예측 계산 중 오류 발생"
+        description="판매 이력 파일을 확인하거나 잠시 후 다시 시도해 주세요."
+        activeStepId="prediction"
+        steps={[
+          { id: "upload", label: "파일 확인", description: "올린 판매 이력 파일을 확인합니다." },
+          { id: "prediction", label: "판매 예측", description: "다음 날짜 예상 판매량을 계산합니다." },
+          { id: "complete", label: "결과 준비", description: "판매 예측 결과 화면을 준비합니다." },
+        ]}
+        onClose={() => setErrorModalOpen(false)}
+      />
       <div className="grid auto-rows-min gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
         <Card className="p-6">
           <div className="grid gap-4">
             <UploadTarget
               icon={Upload}
               title="예측용 판매 이력 파일"
-              description="학습을 다시 하지 않고 현재 로컬 모델로 마지막 날짜 다음 날의 상품별 예상 판매량만 계산합니다."
+              description="판매 이력 CSV를 올리면 마지막 날짜 다음 날의 상품별 예상 판매량을 다시 계산합니다."
               buttonLabel={isAnalyzing ? "계산 중..." : "파일 선택"}
               selectedFileName={csvStatus.fileName}
               disabled={isAnalyzing}
@@ -267,11 +282,6 @@ export function CsvUploadPage({
               onDragStateChange={setIsDraggingForecast}
             />
           </div>
-          {errorMessage ? (
-            <div className="mt-5 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {errorMessage}
-            </div>
-          ) : null}
           <input
             ref={forecastInputRef}
             className="sr-only"
@@ -291,7 +301,7 @@ export function CsvUploadPage({
           <CardHeader>
             <div>
               <CardTitle>파일 요약</CardTitle>
-              <CardDescription>예측 계산에 사용된 파일입니다.</CardDescription>
+              <CardDescription>판매 예측에 사용된 파일입니다.</CardDescription>
             </div>
             <Database className="h-5 w-5 text-[#6B7280]" aria-hidden="true" />
           </CardHeader>

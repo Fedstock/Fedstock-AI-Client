@@ -26,6 +26,8 @@ dist/
 *.db-journal
 client_*.db
 *.csv
+!data/
+!data/item_master.csv
 
 
 # Models and outputs
