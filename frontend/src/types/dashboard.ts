@@ -180,6 +180,8 @@ export type TrainingStatus = {
       distance: number;
     }>;
     uploadedModelPath?: string | null;
+    flModelPath?: string | null;
+    centralFlModelPath?: string | null;
     effectiveModelPath?: string | null;
     centralEffectiveModelPath?: string | null;
   } | null;

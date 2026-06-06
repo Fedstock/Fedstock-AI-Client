@@ -671,6 +671,10 @@ def _run_fl_training(df: pd.DataFrame) -> None:
                 "clusterMembers": registration.get("clusterMembers"),
                 "similarClients": registration.get("similarClients"),
                 "uploadedModelPath": registration.get("modelPath"),
+                "flModelPath": str(synced_model_path),
+                "centralFlModelPath": registration.get("effectiveModelPath")
+                or registration.get("aggregatedModelPath"),
+                # Backward-compatible aliases for older frontend builds.
                 "effectiveModelPath": str(synced_model_path),
                 "centralEffectiveModelPath": registration.get("effectiveModelPath"),
             },
