@@ -7,6 +7,8 @@ import {
   Truck,
   type LucideIcon,
 } from "lucide-react";
+import { centralApiClient, localApiClient } from "../api/client";
+import { getApiErrorMessage } from "../api/errors";
 import type { CsvStatus, DashboardData, LocalState, Metric, TrainingStatus } from "../types/dashboard";
 
 type ApiMetric = Omit<Metric, "icon"> & {
@@ -57,111 +59,78 @@ function hydrateDashboardData(data: ApiDashboardData): DashboardData {
   };
 }
 
-function stripTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
-}
-
-function getLocalApiBaseUrl() {
-  return stripTrailingSlash(import.meta.env.VITE_LOCAL_API_URL ?? import.meta.env.VITE_AI_API_URL ?? "http://localhost:8000");
-}
-
-function getCentralApiBaseUrl() {
-  return stripTrailingSlash(import.meta.env.VITE_CENTRAL_API_URL ?? "https://fadstock.org");
-}
-
-function extractErrorMessage(payload: unknown) {
-  if (typeof payload === "string") return payload;
-  if (!payload || typeof payload !== "object") return "파일을 분석하지 못했습니다.";
-
-  const detail = "detail" in payload ? (payload as { detail?: unknown }).detail : undefined;
-  if (typeof detail === "string") return detail;
-  if (detail && typeof detail === "object" && "message" in detail) {
-    const message = (detail as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  if ("message" in payload) {
-    const message = (payload as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return "파일을 분석하지 못했습니다.";
+function toApiError(error: unknown, fallbackMessage: string) {
+  return new Error(getApiErrorMessage(error, fallbackMessage));
 }
 
 export async function analyzeCsvWithAi(file: File) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${getLocalApiBaseUrl()}/analyze-csv`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = await response.text();
-    }
-    throw new Error(extractErrorMessage(payload));
+  try {
+    const { data: payload } = await localApiClient.post<AnalyzeCsvResponse>("/analyze-csv", formData);
+    return {
+      status: payload.status,
+      data: hydrateDashboardData(payload.data),
+    };
+  } catch (error) {
+    throw toApiError(error, "파일을 분석하지 못했습니다.");
   }
-
-  const payload = (await response.json()) as AnalyzeCsvResponse;
-  return {
-    status: payload.status,
-    data: hydrateDashboardData(payload.data),
-  };
 }
 
 export async function startTrainingWithAi(file: File) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${getLocalApiBaseUrl()}/start-training`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = await response.text();
-    }
-    throw new Error(extractErrorMessage(payload));
+  try {
+    const { data } = await localApiClient.post<{ status: string; server: string }>("/start-training", formData);
+    return data;
+  } catch (error) {
+    throw toApiError(error, "학습을 시작하지 못했습니다.");
   }
+}
 
-  return (await response.json()) as { status: string; server: string };
+export async function syncFlModelWithAi() {
+  try {
+    const { data } = await localApiClient.post<{ status: string; message?: string }>("/sync-fl-model");
+    return data;
+  } catch (error) {
+    throw toApiError(error, "FL 모델 동기화를 시작하지 못했습니다.");
+  }
 }
 
 export async function fetchTrainingStatus() {
-  const response = await fetch(`${getLocalApiBaseUrl()}/training-status`);
-  if (!response.ok) {
-    throw new Error("학습 상태를 불러오지 못했습니다.");
+  try {
+    const { data } = await localApiClient.get<TrainingStatus>("/training-status");
+    return data;
+  } catch (error) {
+    throw toApiError(error, "학습 상태를 불러오지 못했습니다.");
   }
-  return (await response.json()) as TrainingStatus;
 }
 
 export async function fetchLocalState() {
-  const response = await fetch(`${getLocalApiBaseUrl()}/local-state`);
-  if (!response.ok) {
-    throw new Error("로컬 상태를 불러오지 못했습니다.");
+  try {
+    const { data } = await localApiClient.get<LocalState>("/local-state");
+    return data;
+  } catch (error) {
+    throw toApiError(error, "로컬 상태를 불러오지 못했습니다.");
   }
-  return (await response.json()) as LocalState;
 }
 
 export async function fetchLocalHealth() {
-  const response = await fetch(`${getLocalApiBaseUrl()}/health`);
-  if (!response.ok) {
-    throw new Error("로컬 exe 상태를 확인하지 못했습니다.");
+  try {
+    const { data } = await localApiClient.get<HealthResponse>("/health");
+    return data;
+  } catch (error) {
+    throw toApiError(error, "로컬 exe 상태를 확인하지 못했습니다.");
   }
-  return (await response.json()) as HealthResponse;
 }
 
 export async function fetchCentralHealth() {
-  const response = await fetch(`${getCentralApiBaseUrl()}/health`);
-  if (!response.ok) {
-    throw new Error("중앙 서버 상태를 확인하지 못했습니다.");
+  try {
+    const { data } = await centralApiClient.get<HealthResponse>("/health");
+    return data;
+  } catch (error) {
+    throw toApiError(error, "중앙 서버 상태를 확인하지 못했습니다.");
   }
-  return (await response.json()) as HealthResponse;
 }

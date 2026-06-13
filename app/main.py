@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+import logging
 import os
 import sys
 import threading
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime
@@ -16,9 +18,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from torch.utils.data import DataLoader
@@ -30,9 +32,12 @@ ROOT_DIR = Path(os.getenv("FEDSTOCK_DATA_DIR") or str(Path(__file__).resolve().p
 RUN_DIR = ROOT_DIR / "outputs" / "runs" / "20260522_025148_061195"
 LOCAL_OUTPUT_DIR = ROOT_DIR / "outputs" / "local_training"
 SYNCED_MODEL_DIR = LOCAL_OUTPUT_DIR / "synced_models"
+UPLOADED_CSV_DIR = LOCAL_OUTPUT_DIR / "uploaded_csv"
+TRACE_LOG_PATH = ROOT_DIR / "outputs" / "api_trace.jsonl"
 
 FLOWER_SERVER = os.getenv("FLOWER_SERVER", "localhost:8080")
 CENTRAL_BACKEND_URL = os.getenv("CENTRAL_BACKEND_URL", "https://fadstock.org").rstrip("/")
+CENTRAL_AUTH_TOKEN = os.getenv("FEDSTOCK_CENTRAL_AUTH_TOKEN") or os.getenv("CENTRAL_AUTH_TOKEN")
 CLIENT_MODEL_DIR = RUN_DIR / "models" / "clients"
 CONFIG_PATH = RUN_DIR / "config.json"
 ITEM_MASTER_PATH = ROOT_DIR / "data" / "item_master.csv"
@@ -41,6 +46,120 @@ SEQ_LEN = 14
 LOCAL_PRETRAIN_EPOCHS = 40
 DEFAULT_LEAD_TIME_DAYS = 4
 HISTORY_WINDOW_PER_ITEM = 35
+RAW_API_LOG_MAX_BYTES = int(os.getenv("FEDSTOCK_RAW_API_LOG_MAX_BYTES", "200000"))
+FEDSTOCK_DEMO_MODE = os.getenv("FEDSTOCK_DEMO_MODE", "1").lower() in {"1", "true", "yes", "demo", "test"}
+FEDSTOCK_RANDOM_SEED = int(os.getenv("FEDSTOCK_RANDOM_SEED", "42"))
+
+logging.basicConfig(
+    level=os.getenv("FEDSTOCK_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("fedstock.local")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _audit_event(event: str, **fields: Any) -> None:
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "service": "fedstock-local",
+        "event": event,
+        **_json_safe(fields),
+    }
+    try:
+        TRACE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with TRACE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # pragma: no cover - audit logging must not block work
+        logger.warning("failed to write audit log: %s", exc)
+    logger.info("%s %s", event, json.dumps(_json_safe(fields), ensure_ascii=False))
+
+
+def _set_deterministic_seed(stage: str) -> None:
+    if not FEDSTOCK_DEMO_MODE:
+        return
+    np.random.seed(FEDSTOCK_RANDOM_SEED)
+    torch.manual_seed(FEDSTOCK_RANDOM_SEED)
+    _audit_event("local.random_seed.fixed", stage=stage, seed=FEDSTOCK_RANDOM_SEED)
+
+
+def _safe_file_stem(value: str | None, fallback: str = "uploaded") -> str:
+    raw_stem = Path(value or fallback).stem or fallback
+    safe = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "_"
+        for char in raw_stem
+    ).strip("_")
+    return safe or fallback
+
+
+def _save_uploaded_csv(file_name: str | None, content: bytes, client_id: str) -> Path:
+    UPLOADED_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    safe_client_id = _safe_file_stem(client_id, "client")
+    safe_file_name = _safe_file_stem(file_name, "uploaded")
+    output_path = UPLOADED_CSV_DIR / f"{timestamp}_{safe_client_id}_{safe_file_name}.csv"
+    output_path.write_bytes(content)
+    _audit_event(
+        "local.uploaded_csv.saved",
+        clientId=client_id,
+        sourceFileName=file_name or "uploaded.csv",
+        savedCsvPath=output_path,
+        bytes=len(content),
+    )
+    return output_path
+
+
+def _read_saved_csv(path: Path) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except UnicodeDecodeError:
+        return pd.read_csv(path, encoding="cp949")
+
+
+def _is_text_response(content_type: str) -> bool:
+    lowered = content_type.lower()
+    return (
+        "json" in lowered
+        or "text/" in lowered
+        or "application/xml" in lowered
+    )
+
+
+def _response_body_for_terminal(body: bytes, content_type: str) -> str:
+    if not body:
+        return "<empty response body>"
+    if not _is_text_response(content_type):
+        return f"<binary response omitted; bytes={len(body)} content_type={content_type or 'unknown'}>"
+
+    truncated = len(body) > RAW_API_LOG_MAX_BYTES
+    visible_body = body[:RAW_API_LOG_MAX_BYTES] if truncated else body
+    try:
+        text = visible_body.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"<non-utf8 response omitted; bytes={len(body)} content_type={content_type or 'unknown'}>"
+
+    if "json" in content_type.lower() and not truncated:
+        try:
+            parsed = json.loads(text)
+            return json.dumps(parsed, ensure_ascii=False, indent=2)
+        except json.JSONDecodeError:
+            pass
+
+    if truncated:
+        return f"{text}\n<response truncated; total_bytes={len(body)} shown_bytes={RAW_API_LOG_MAX_BYTES}>"
+    return text
 
 
 def _load_selected_features() -> list[str]:
@@ -98,7 +217,52 @@ def _load_item_master() -> dict[str, dict[str, Any]]:
 ITEM_MASTER = _load_item_master()
 
 
-app = FastAPI(title="Fedstock AI API", version="0.1.0")
+app = FastAPI(
+    title="Fedstock AI API",
+    version="0.1.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+
+@app.middleware("http")
+async def _log_raw_api_response(request, call_next):
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "")
+
+    if not _is_text_response(content_type):
+        logger.info(
+            "RAW API RESPONSE %s %s status=%s content_type=%s bytes=%s\n%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            content_type or "unknown",
+            response.headers.get("content-length", "unknown"),
+            f"<binary/streaming response omitted; content_type={content_type or 'unknown'}>",
+        )
+        return response
+
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    logger.info(
+        "RAW API RESPONSE %s %s status=%s content_type=%s bytes=%s\n%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        content_type or "unknown",
+        len(body),
+        _response_body_for_terminal(body, content_type),
+    )
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers=headers,
+        background=response.background,
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -461,10 +625,30 @@ def _get_central_health() -> dict[str, Any]:
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            raw_body = response.read()
+            raw_text = raw_body.decode("utf-8", errors="replace")
+            logger.info(
+                "RAW CENTRAL RESPONSE GET /health status=%s bytes=%s\n%s",
+                response.status,
+                len(raw_body),
+                _response_body_for_terminal(
+                    raw_body,
+                    response.headers.get("content-type", "application/json"),
+                ),
+            )
+            payload = json.loads(raw_text)
             return {"ok": True, "statusCode": response.status, "payload": payload}
     except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace")
+        raw_body = exc.read()
+        message = raw_body.decode("utf-8", errors="replace")
+        logger.info(
+            "RAW CENTRAL RESPONSE GET /health status=%s\n%s",
+            exc.code,
+            _response_body_for_terminal(
+                raw_body,
+                exc.headers.get("content-type", "application/json"),
+            ),
+        )
         return {"ok": False, "statusCode": exc.code, "message": message}
     except urllib.error.URLError as exc:
         return {"ok": False, "statusCode": None, "message": str(exc.reason)}
@@ -472,58 +656,344 @@ def _get_central_health() -> dict[str, Any]:
         return {"ok": False, "statusCode": None, "message": str(exc)}
 
 
-def _post_to_central_backend(
+def _central_auth_header(authorization: str | None) -> str | None:
+    if authorization:
+        return authorization
+    if CENTRAL_AUTH_TOKEN:
+        return f"Bearer {CENTRAL_AUTH_TOKEN}"
+    return None
+
+
+def _central_request_headers(
+    content_type: str | None = None,
+    authorization: str | None = None,
+) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    auth_header = _central_auth_header(authorization)
+    if auth_header:
+        headers["Authorization"] = auth_header
+    return headers
+
+
+def _request_cluster_assignment(
     client_id: str,
-    model_path: Path,
-    importance_path: Path,
-    sample_weight: int,
+    importance_payload: dict[str, Any],
+    sample_count: int,
+    round_id: str,
+    authorization: str | None,
 ) -> dict[str, Any]:
-    model_bytes = model_path.read_bytes()
-    importance_bytes = importance_path.read_bytes()
-    payload, boundary = _encode_multipart_formdata(
-        fields={
-            "client_id": client_id,
-            "sample_weight": str(max(1, int(sample_weight))),
-        },
-        files=[
-            ("model_file", model_path.name, model_bytes, "application/octet-stream"),
-            ("importance_file", importance_path.name, importance_bytes, "application/json"),
+    request_payload = {
+        "scope": "single_client",
+        "roundId": round_id,
+        "clientId": client_id,
+        "sampleCount": max(1, int(sample_count)),
+        "featureNames": list(importance_payload.get("featureNames") or SELECTED_FEATURES),
+        "featureImportance": [
+            float(value)
+            for value in importance_payload.get("noisyImportance", [])
         ],
+        "expectedClientCount": None,
+    }
+    request_bytes = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
+    payload_path = LOCAL_OUTPUT_DIR / f"{client_id}_{round_id}_cluster_assignment_request.json"
+    payload_path.write_text(json.dumps(request_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _audit_event(
+        "local.cluster_assignment.request",
+        clientId=client_id,
+        url=f"{CENTRAL_BACKEND_URL}/ai/clients/cluster-assignment",
+        payloadPath=payload_path,
+        sampleCount=sample_count,
+        roundId=round_id,
+        featureCount=len(request_payload["featureImportance"]),
+        hasAuthorization=bool(_central_auth_header(authorization)),
     )
     request = urllib.request.Request(
-        url=f"{CENTRAL_BACKEND_URL}/clients/register",
-        data=payload,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        url=f"{CENTRAL_BACKEND_URL}/ai/clients/cluster-assignment",
+        data=request_bytes,
+        headers=_central_request_headers("application/json", authorization),
         method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw_body = response.read()
+            raw_text = raw_body.decode("utf-8", errors="replace")
+            logger.info(
+                "RAW CENTRAL RESPONSE POST /ai/clients/cluster-assignment status=%s bytes=%s\n%s",
+                response.status,
+                len(raw_body),
+                _response_body_for_terminal(
+                    raw_body,
+                    response.headers.get("content-type", "application/json"),
+                ),
+            )
+            result = json.loads(raw_text)
+            _audit_event(
+                "local.cluster_assignment.response",
+                clientId=client_id,
+                statusCode=response.status,
+                status=result.get("status"),
+                assignedTo=result.get("assignedTo"),
+                clusterId=result.get("clusterId"),
+                clusterMembers=result.get("clusterMembers"),
+                queueStatus=result.get("queueStatus"),
+                distance=result.get("distance"),
+                threshold=result.get("threshold"),
+            )
+            return result
     except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"중앙 서버 등록 실패 ({exc.code}): {message}") from exc
+        raw_body = exc.read()
+        message = raw_body.decode("utf-8", errors="replace")
+        logger.info(
+            "RAW CENTRAL RESPONSE POST /ai/clients/cluster-assignment status=%s\n%s",
+            exc.code,
+            _response_body_for_terminal(
+                raw_body,
+                exc.headers.get("content-type", "application/json"),
+            ),
+        )
+        _audit_event(
+            "local.cluster_assignment.error",
+            clientId=client_id,
+            statusCode=exc.code,
+            message=message,
+        )
+        raise RuntimeError(f"중앙 서버 클러스터 배정 실패 ({exc.code}): {message}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"중앙 서버 연결 실패: {exc.reason}") from exc
+        _audit_event(
+            "local.cluster_assignment.error",
+            clientId=client_id,
+            message=str(exc.reason),
+        )
+        raise RuntimeError(f"중앙 서버 클러스터 배정 연결 실패: {exc.reason}") from exc
 
 
-def _download_effective_model(client_id: str) -> Path:
+def _upload_model_and_download_fl_model(
+    client_id: str,
+    model_path: Path,
+    sample_weight: int,
+    round_id: str,
+    authorization: str | None,
+) -> tuple[Path, dict[str, str]]:
+    model_bytes = model_path.read_bytes()
+    _audit_event(
+        "local.fl_model_sync.request",
+        clientId=client_id,
+        url=f"{CENTRAL_BACKEND_URL}/ai/clients/{client_id}/fl-model",
+        modelPath=model_path,
+        modelBytes=len(model_bytes),
+        sampleWeight=sample_weight,
+        roundId=round_id,
+        scope="single_client",
+        hasAuthorization=bool(_central_auth_header(authorization)),
+    )
+    payload, boundary = _encode_multipart_formdata(
+        fields={
+            "client_id": client_id,
+            "scope": "single_client",
+            "round_id": round_id,
+            "sample_weight": str(max(1, int(sample_weight))),
+        },
+        files=[
+            ("model_file", model_path.name, model_bytes, "application/octet-stream"),
+        ],
+    )
     request = urllib.request.Request(
-        url=f"{CENTRAL_BACKEND_URL}/clients/{client_id}/fl-model",
-        method="GET",
+        url=f"{CENTRAL_BACKEND_URL}/ai/clients/{client_id}/fl-model",
+        data=payload,
+        headers=_central_request_headers(f"multipart/form-data; boundary={boundary}", authorization),
+        method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             content = response.read()
+            response_headers = {key: value for key, value in response.headers.items()}
+            logger.info(
+                "RAW CENTRAL RESPONSE POST /ai/clients/%s/fl-model status=%s bytes=%s headers=%s\n<binary model response omitted>",
+                client_id,
+                response.status,
+                len(content),
+                json.dumps(response_headers, ensure_ascii=False),
+            )
     except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"집계 모델 다운로드 실패 ({exc.code}): {message}") from exc
+        raw_body = exc.read()
+        message = raw_body.decode("utf-8", errors="replace")
+        logger.info(
+            "RAW CENTRAL RESPONSE POST /ai/clients/%s/fl-model status=%s\n%s",
+            client_id,
+            exc.code,
+            _response_body_for_terminal(
+                raw_body,
+                exc.headers.get("content-type", "application/json"),
+            ),
+        )
+        _audit_event(
+            "local.fl_model_sync.error",
+            clientId=client_id,
+            statusCode=exc.code,
+            message=message,
+        )
+        raise RuntimeError(f"중앙 서버 FL 모델 동기화 실패 ({exc.code}): {message}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"집계 모델 다운로드 연결 실패: {exc.reason}") from exc
+        _audit_event(
+            "local.fl_model_sync.error",
+            clientId=client_id,
+            message=str(exc.reason),
+        )
+        raise RuntimeError(f"중앙 서버 FL 모델 동기화 연결 실패: {exc.reason}") from exc
 
     SYNCED_MODEL_DIR.mkdir(parents=True, exist_ok=True)
     output_path = SYNCED_MODEL_DIR / f"client_{client_id}.pt"
     output_path.write_bytes(content)
-    return output_path
+    _audit_event(
+        "local.fl_model_sync.response",
+        clientId=client_id,
+        outputPath=output_path,
+        bytes=len(content),
+        headers=response_headers,
+    )
+    return output_path, response_headers
+
+
+def _assignment_model_url(assignment: dict[str, Any]) -> str | None:
+    for key in (
+        "modelDownloadUrl",
+        "flModelUrl",
+        "clusterModelUrl",
+        "modelUrl",
+        "downloadUrl",
+    ):
+        value = assignment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _download_assigned_model(
+    client_id: str,
+    model_url: str,
+    authorization: str | None,
+) -> tuple[Path, dict[str, str]]:
+    resolved_url = urllib.parse.urljoin(f"{CENTRAL_BACKEND_URL}/", model_url.lstrip("/"))
+    request = urllib.request.Request(
+        url=resolved_url,
+        headers=_central_request_headers(authorization=authorization),
+        method="GET",
+    )
+    _audit_event(
+        "local.assigned_model_download.request",
+        clientId=client_id,
+        url=resolved_url,
+        hasAuthorization=bool(_central_auth_header(authorization)),
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            content = response.read()
+            response_headers = {key: value for key, value in response.headers.items()}
+            logger.info(
+                "RAW CENTRAL RESPONSE GET %s status=%s bytes=%s headers=%s\n<binary model response omitted>",
+                resolved_url,
+                response.status,
+                len(content),
+                json.dumps(response_headers, ensure_ascii=False),
+            )
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read()
+        message = raw_body.decode("utf-8", errors="replace")
+        logger.info(
+            "RAW CENTRAL RESPONSE GET %s status=%s\n%s",
+            resolved_url,
+            exc.code,
+            _response_body_for_terminal(
+                raw_body,
+                exc.headers.get("content-type", "application/json"),
+            ),
+        )
+        raise RuntimeError(f"중앙 서버 클러스터 모델 다운로드 실패 ({exc.code}): {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"중앙 서버 클러스터 모델 다운로드 연결 실패: {exc.reason}") from exc
+
+    SYNCED_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = SYNCED_MODEL_DIR / f"client_{client_id}.pt"
+    output_path.write_bytes(content)
+    _audit_event(
+        "local.assigned_model_download.response",
+        clientId=client_id,
+        outputPath=output_path,
+        bytes=len(content),
+        headers=response_headers,
+    )
+    return output_path, response_headers
+
+
+def _cluster_model_candidate(cluster_id: Any) -> Path | None:
+    if cluster_id is None:
+        return None
+    try:
+        normalized_cluster_id = int(cluster_id)
+    except (TypeError, ValueError):
+        normalized_cluster_id = str(cluster_id).strip()
+    candidate = RUN_DIR / "models" / "bubbles" / f"bubble_{normalized_cluster_id}.pt"
+    return candidate if candidate.exists() else None
+
+
+def _save_local_cluster_model_for_client(
+    client_id: str,
+    source_model_path: Path,
+    assignment: dict[str, Any],
+) -> tuple[Path, dict[str, str]]:
+    SYNCED_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = SYNCED_MODEL_DIR / f"client_{client_id}.pt"
+    output_path.write_bytes(source_model_path.read_bytes())
+    headers = {
+        "X-Fedstock-Client-Id": client_id,
+        "X-Fedstock-Cluster-Id": str(assignment.get("clusterId", "")),
+        "X-Fedstock-Model-Scope": "local-bundled-cluster",
+        "X-Fedstock-Storage-Path": str(source_model_path),
+    }
+    _audit_event(
+        "local.assigned_model.local_cluster_saved",
+        clientId=client_id,
+        clusterId=assignment.get("clusterId"),
+        assignedTo=assignment.get("assignedTo"),
+        sourceModelPath=source_model_path,
+        outputPath=output_path,
+    )
+    return output_path, headers
+
+
+def _resolve_assigned_model(
+    client_id: str,
+    assignment: dict[str, Any],
+    authorization: str | None,
+) -> tuple[Path, dict[str, str]]:
+    model_url = _assignment_model_url(assignment)
+    if model_url:
+        return _download_assigned_model(client_id, model_url, authorization)
+
+    cluster_model_path = _cluster_model_candidate(assignment.get("clusterId"))
+    if cluster_model_path is not None:
+        return _save_local_cluster_model_for_client(client_id, cluster_model_path, assignment)
+
+    existing_model_path = _preferred_local_model_path(client_id)
+    if existing_model_path is not None:
+        _audit_event(
+            "local.assigned_model.existing_client_model_used",
+            clientId=client_id,
+            modelPath=existing_model_path,
+            reason="cluster response did not include a download URL and no bundled cluster model matched",
+        )
+        return existing_model_path, {
+            "X-Fedstock-Client-Id": client_id,
+            "X-Fedstock-Model-Scope": "existing-client-fallback",
+            "X-Fedstock-Storage-Path": str(existing_model_path),
+        }
+
+    raise RuntimeError(
+        "클러스터 배정은 받았지만 사용할 FL 모델을 찾지 못했습니다. "
+        "중앙 응답에 모델 다운로드 URL을 포함하거나, 로컬 번들에 bubble_{clusterId}.pt가 필요합니다."
+    )
 
 
 def _preferred_local_model_path(client_id: str) -> Path | None:
@@ -550,138 +1020,276 @@ def _make_sequences(features: np.ndarray, targets: np.ndarray, seq_len: int) -> 
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
 
-def _run_fl_training(df: pd.DataFrame) -> None:
+def _new_round_suffix() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+
+def _set_training_state(status: str, message: str, **extra: Any) -> None:
+    global _TRAINING_STATE
+    with _TRAINING_LOCK:
+        current = dict(_TRAINING_STATE)
+        current.update(
+            {
+                "status": status,
+                "message": message,
+                "updatedAt": _timestamp(),
+            }
+        )
+        current.update(extra)
+        _TRAINING_STATE = current
+    _audit_event(
+        "local.training_state",
+        status=status,
+        stage=extra.get("stage"),
+        message=message,
+        clientId=extra.get("clientId") or _TRAINING_STATE.get("clientId"),
+        latestModelPath=extra.get("latestModelPath"),
+        latestImportancePath=extra.get("latestImportancePath"),
+        savedCsvPath=extra.get("savedCsvPath"),
+        centralSync=extra.get("centralSync"),
+    )
+
+
+def _build_training_client(df: pd.DataFrame) -> dict[str, Any]:
     from src.dataset import FedStockDataset, make_group_time_split_indices
     from src.fl.client import FedStockClient
 
-    global _TRAINING_STATE
+    working_df = df.dropna(subset=SELECTED_FEATURES + ["sales"]).reset_index(drop=True)
+    if len(working_df) <= SEQ_LEN * 2:
+        raise ValueError("처리에 필요한 데이터가 부족합니다 (최소 시퀀스 길이의 2배 이상).")
 
-    def _set(status: str, message: str, **extra: Any) -> None:
-        global _TRAINING_STATE
-        with _TRAINING_LOCK:
-            current = dict(_TRAINING_STATE)
-            current.update(
-                {
-                    "status": status,
-                    "message": message,
-                    "updatedAt": _timestamp(),
-                }
-            )
-            current.update(extra)
-            _TRAINING_STATE = current
+    x_scaler = StandardScaler()
+    y_scaler = RobustScaler()
+    X_scaled = x_scaler.fit_transform(working_df[SELECTED_FEATURES].values.astype(np.float32))
+    y_scaled = y_scaler.fit_transform(working_df["sales"].values.reshape(-1, 1)).flatten().astype(np.float32)
 
+    split = make_group_time_split_indices(working_df["item_id"].values)
+    train_idx, val_idx = split["train"], split["val"]
+
+    X_train_seq, y_train_seq = _make_sequences(X_scaled[train_idx], y_scaled[train_idx], SEQ_LEN)
+    X_val_seq, y_val_seq = _make_sequences(X_scaled[val_idx], y_scaled[val_idx], SEQ_LEN)
+
+    if len(X_train_seq) == 0:
+        raise ValueError("훈련 시퀀스를 만들 수 없습니다. 상품별 데이터가 너무 적습니다.")
+    if len(X_val_seq) == 0:
+        X_val_seq, y_val_seq = X_train_seq, y_train_seq
+
+    train_loader = DataLoader(FedStockDataset(X_train_seq, y_train_seq), batch_size=64, shuffle=True)
+    val_loader = DataLoader(FedStockDataset(X_val_seq, y_val_seq), batch_size=64, shuffle=False)
+
+    client_id = str(working_df["client_id"].mode().iloc[0]) if "client_id" in working_df.columns else "default"
+    client = FedStockClient(
+        cid=client_id,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        X_train=X_train_seq,
+        y_train=y_train_seq,
+        input_size=len(SELECTED_FEATURES),
+        hidden_size=32,
+        y_scaler=y_scaler,
+    )
+    return {
+        "client": client,
+        "clientId": client_id,
+        "sampleCount": len(X_train_seq),
+        "workingRows": len(working_df),
+    }
+
+
+def _run_cluster_assignment_for_prediction(df: pd.DataFrame, authorization: str | None = None) -> None:
     try:
-        _set("running", "데이터 전처리 중...", startedAt=_timestamp(), stage="preprocess")
-
-        df = df.dropna(subset=SELECTED_FEATURES + ["sales"]).reset_index(drop=True)
-        if len(df) <= SEQ_LEN * 2:
-            raise ValueError("학습에 필요한 데이터가 부족합니다 (최소 시퀀스 길이의 2배 이상).")
-
-        x_scaler = StandardScaler()
-        y_scaler = RobustScaler()
-        X_scaled = x_scaler.fit_transform(df[SELECTED_FEATURES].values.astype(np.float32))
-        y_scaled = y_scaler.fit_transform(df["sales"].values.reshape(-1, 1)).flatten().astype(np.float32)
-
-        split = make_group_time_split_indices(df["item_id"].values)
-        train_idx, val_idx = split["train"], split["val"]
-
-        X_train_seq, y_train_seq = _make_sequences(X_scaled[train_idx], y_scaled[train_idx], SEQ_LEN)
-        X_val_seq, y_val_seq = _make_sequences(X_scaled[val_idx], y_scaled[val_idx], SEQ_LEN)
-
-        if len(X_train_seq) == 0:
-            raise ValueError("훈련 시퀀스를 만들 수 없습니다. 상품별 데이터가 너무 적습니다.")
-        if len(X_val_seq) == 0:
-            X_val_seq, y_val_seq = X_train_seq, y_train_seq
-
-        train_loader = DataLoader(FedStockDataset(X_train_seq, y_train_seq), batch_size=64, shuffle=True)
-        val_loader = DataLoader(FedStockDataset(X_val_seq, y_val_seq), batch_size=64, shuffle=False)
-
-        client_id = str(df["client_id"].mode().iloc[0]) if "client_id" in df.columns else "default"
-        client = FedStockClient(
-            cid=client_id,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            X_train=X_train_seq,
-            y_train=y_train_seq,
-            input_size=len(SELECTED_FEATURES),
-            hidden_size=32,
-            y_scaler=y_scaler,
+        _set_training_state(
+            "running",
+            "데이터 전처리 중...",
+            startedAt=_timestamp(),
+            stage="preprocess",
+            centralSync=None,
         )
+        _set_deterministic_seed("cluster-assignment")
+        training_bundle = _build_training_client(df)
+        client = training_bundle["client"]
+        client_id = str(training_bundle["clientId"])
+        sample_count = int(training_bundle["sampleCount"])
+        round_suffix = _new_round_suffix()
+        cluster_round_id = f"initial-clustering-{round_suffix}"
 
         LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         importance_vector = client.extract_noisy_importance()
-        importance_path = LOCAL_OUTPUT_DIR / f"{client_id}_noisy_importance.json"
+        importance_path = LOCAL_OUTPUT_DIR / f"{client_id}_{round_suffix}_noisy_importance.json"
         importance_payload = {
             "clientId": client_id,
             "generatedAt": _timestamp(),
             "featureNames": SELECTED_FEATURES,
             "noisyImportance": [float(value) for value in importance_vector],
             "topFeatures": _feature_importance_summary(importance_vector),
+            "sampleCount": sample_count,
         }
         importance_path.write_text(
             json.dumps(importance_payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        _set(
+        _set_training_state(
             "running",
-            "로컬 noisy importance 생성 완료. 로컬 사전학습을 시작합니다.",
+            "noisy feature importance 생성 완료. 중앙 서버에 클러스터 배정을 요청합니다.",
             stage="importance",
             clientId=client_id,
             latestImportancePath=str(importance_path),
             latestImportance=importance_payload["topFeatures"],
         )
 
-        _set("running", f"로컬 사전학습 진행 중 ({LOCAL_PRETRAIN_EPOCHS} epochs)...", stage="local_training")
+        _set_training_state(
+            "running",
+            "중앙 서버에 clientId와 noisy feature importance를 전송하는 중...",
+            stage="central_cluster_assignment",
+            clientId=client_id,
+        )
+        assignment = _request_cluster_assignment(
+            client_id=client_id,
+            importance_payload=importance_payload,
+            sample_count=sample_count,
+            round_id=cluster_round_id,
+            authorization=authorization,
+        )
+        assignment_status = str(assignment.get("status", "")).lower()
+        if assignment_status == "queued":
+            raise RuntimeError("중앙 서버 클러스터 배정이 아직 대기 상태입니다. 잠시 후 다시 시도해 주세요.")
+        if assignment_status == "failed":
+            raise RuntimeError(str(assignment.get("message") or "중앙 서버 클러스터 배정이 실패했습니다."))
+
+        _set_training_state(
+            "running",
+            "배정된 클러스터 모델을 준비하는 중...",
+            stage="cluster_model_download",
+            clientId=client_id,
+        )
+        assigned_model_path, model_headers = _resolve_assigned_model(
+            client_id=client_id,
+            assignment=assignment,
+            authorization=authorization,
+        )
+        _MODEL_CACHE.clear()
+        _set_training_state(
+            "done",
+            "클러스터 배정 및 예측 모델 준비 완료",
+            stage="done",
+            clientId=client_id,
+            latestModelPath=str(assigned_model_path),
+            centralSync={
+                "clientId": client_id,
+                "scope": assignment.get("scope"),
+                "status": assignment.get("status"),
+                "queueStatus": assignment.get("queueStatus"),
+                "clusterId": assignment.get("clusterId"),
+                "assignedTo": assignment.get("assignedTo"),
+                "clusterMembers": assignment.get("clusterMembers"),
+                "distance": assignment.get("distance"),
+                "threshold": assignment.get("threshold"),
+                "message": assignment.get("message"),
+                "clusterRoundId": cluster_round_id,
+                "flModelPath": str(assigned_model_path),
+                "centralModelScope": model_headers.get("X-Fedstock-Model-Scope"),
+                "centralStoragePath": model_headers.get("X-Fedstock-Storage-Path"),
+                "effectiveModelPath": str(assigned_model_path),
+                "centralEffectiveModelPath": model_headers.get("X-Fedstock-Storage-Path"),
+            },
+        )
+
+    except Exception as exc:
+        _audit_event("local.training_error", message=str(exc))
+        _set_training_state("error", str(exc))
+
+
+def _load_accumulated_csv_frame() -> tuple[pd.DataFrame, list[Path]]:
+    csv_paths = sorted(UPLOADED_CSV_DIR.glob("*.csv")) if UPLOADED_CSV_DIR.exists() else []
+    if not csv_paths:
+        raise ValueError("누적 저장된 CSV가 없습니다. 먼저 판매 데이터 CSV를 업로드해 주세요.")
+
+    frames = []
+    for path in csv_paths:
+        frame = _read_saved_csv(path)
+        frame["_saved_csv_path"] = str(path)
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True), csv_paths
+
+
+def _run_fl_model_sync(authorization: str | None = None) -> None:
+    try:
+        _set_training_state(
+            "running",
+            "누적 저장된 CSV를 불러오는 중...",
+            startedAt=_timestamp(),
+            stage="sync_load",
+        )
+        raw_df, csv_paths = _load_accumulated_csv_frame()
+        prepared, _, _, _ = _prepare_frame(raw_df)
+
+        _set_training_state(
+            "running",
+            "누적 CSV 전처리 및 로컬 LSTM 학습 준비 중...",
+            stage="preprocess",
+            clientId=str(prepared["client_id"].mode().iloc[0]) if "client_id" in prepared.columns else "default",
+            centralSync={
+                "savedCsvCount": len(csv_paths),
+                "savedCsvPaths": [str(path) for path in csv_paths[-10:]],
+            },
+        )
+        _set_deterministic_seed("fl-model-sync")
+        training_bundle = _build_training_client(prepared)
+        client = training_bundle["client"]
+        client_id = str(training_bundle["clientId"])
+        sample_count = int(training_bundle["sampleCount"])
+        round_suffix = _new_round_suffix()
+        fl_round_id = f"fl-sync-{round_suffix}"
+
+        _set_training_state(
+            "running",
+            f"누적 CSV 기반 로컬 LSTM 학습 진행 중 ({LOCAL_PRETRAIN_EPOCHS} epochs)...",
+            stage="local_training",
+            clientId=client_id,
+        )
         client._train_epochs(LOCAL_PRETRAIN_EPOCHS)
         model_dir = LOCAL_OUTPUT_DIR / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / f"client_{client_id}.pt"
         torch.save(client.model.state_dict(), model_path)
         _MODEL_CACHE.clear()
-        _set(
+        _set_training_state(
             "running",
-            "로컬 학습 완료. 중앙 서버에 가중치 업로드 중...",
-            stage="central_register",
+            "학습된 로컬 모델을 중앙 서버에 업로드하고 FL 모델을 수신하는 중...",
+            stage="central_fl_model_sync",
+            clientId=client_id,
             latestModelPath=str(model_path),
         )
 
-        registration = _post_to_central_backend(
+        synced_model_path, model_headers = _upload_model_and_download_fl_model(
             client_id=client_id,
             model_path=model_path,
-            importance_path=importance_path,
-            sample_weight=len(X_train_seq),
+            sample_weight=sample_count,
+            round_id=fl_round_id,
+            authorization=authorization,
         )
-        _set(
-            "running",
-            "중앙 서버 등록 완료. 클러스터 집계 모델을 다운로드 중...",
-            stage="central_download",
-            latestModelPath=str(model_path),
-        )
-        synced_model_path = _download_effective_model(client_id)
         _MODEL_CACHE.clear()
-        _set(
+        _set_training_state(
             "done",
-            "중앙 서버 동기화 및 집계 모델 수신 완료",
+            "누적 CSV 기반 FL 모델 동기화 완료",
             stage="done",
+            clientId=client_id,
             latestModelPath=str(synced_model_path),
             centralSync={
                 "clientId": client_id,
-                "clusterId": registration.get("clusterId"),
-                "assignedTo": registration.get("assignedTo"),
-                "clusterMembers": registration.get("clusterMembers"),
-                "similarClients": registration.get("similarClients"),
-                "uploadedModelPath": registration.get("modelPath"),
+                "savedCsvCount": len(csv_paths),
+                "flRoundId": fl_round_id,
+                "uploadedModelPath": str(model_path),
                 "flModelPath": str(synced_model_path),
-                "centralFlModelPath": registration.get("effectiveModelPath")
-                or registration.get("aggregatedModelPath"),
-                # Backward-compatible aliases for older frontend builds.
+                "centralModelScope": model_headers.get("X-Fedstock-Model-Scope"),
+                "centralStoragePath": model_headers.get("X-Fedstock-Storage-Path"),
                 "effectiveModelPath": str(synced_model_path),
-                "centralEffectiveModelPath": registration.get("effectiveModelPath"),
+                "centralEffectiveModelPath": model_headers.get("X-Fedstock-Storage-Path"),
             },
         )
-
     except Exception as exc:
-        _set("error", str(exc))
+        _audit_event("local.fl_model_sync.background_error", message=str(exc))
+        _set_training_state("error", str(exc))
 
 
 def _local_state_payload() -> dict[str, Any]:
@@ -692,6 +1300,7 @@ def _local_state_payload() -> dict[str, Any]:
     latest_importance_path = _TRAINING_STATE.get("latestImportancePath")
     latest_importance = _TRAINING_STATE.get("latestImportance") or []
     synced_models = sorted(SYNCED_MODEL_DIR.glob("client_*.pt")) if SYNCED_MODEL_DIR.exists() else []
+    saved_csvs = sorted(UPLOADED_CSV_DIR.glob("*.csv")) if UPLOADED_CSV_DIR.exists() else []
 
     return {
         "flowerServer": FLOWER_SERVER,
@@ -702,6 +1311,9 @@ def _local_state_payload() -> dict[str, Any]:
         "modelDirExists": CLIENT_MODEL_DIR.exists(),
         "pretrainedModelCount": len(list(CLIENT_MODEL_DIR.glob("client_*.pt"))) if CLIENT_MODEL_DIR.exists() else 0,
         "localOutputDir": str(LOCAL_OUTPUT_DIR),
+        "uploadedCsvDir": str(UPLOADED_CSV_DIR),
+        "savedCsvCount": len(saved_csvs),
+        "latestSavedCsvPath": str(saved_csvs[-1]) if saved_csvs else None,
         "localModelCount": len(local_models),
         "syncedModelCount": len(synced_models),
         "latestSyncedModelPath": str(synced_models[-1]) if synced_models else None,
@@ -1068,17 +1680,70 @@ def local_state() -> dict[str, Any]:
 
 
 @app.post("/start-training")
-async def start_training(file: UploadFile = File(...)) -> dict[str, Any]:
+async def start_training(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     with _TRAINING_LOCK:
         if _TRAINING_STATE["status"] == "running":
             raise HTTPException(status_code=409, detail="이미 학습이 진행 중입니다.")
 
     content = await file.read()
+    authorization = request.headers.get("authorization")
+    _audit_event(
+        "local.start_training.received",
+        fileName=file.filename or "uploaded.csv",
+        bytes=len(content),
+        centralBackend=CENTRAL_BACKEND_URL,
+        hasAuthorization=bool(authorization),
+    )
     raw_df = _read_csv(file, content)
     prepared, _, _, _ = _prepare_frame(raw_df)
+    client_id = str(prepared["client_id"].mode().iloc[0]) if "client_id" in prepared.columns else "default"
+    saved_csv_path = _save_uploaded_csv(file.filename or "uploaded.csv", content, client_id)
+    _audit_event(
+        "local.start_training.prepared",
+        fileName=file.filename or "uploaded.csv",
+        rows=len(raw_df),
+        usableRows=len(prepared),
+        clientId=client_id,
+        savedCsvPath=saved_csv_path,
+        minDate=prepared["sale_date"].min().strftime("%Y-%m-%d"),
+        maxDate=prepared["sale_date"].max().strftime("%Y-%m-%d"),
+    )
 
-    threading.Thread(target=_run_fl_training, args=(prepared,), daemon=True).start()
+    _set_training_state(
+        "running",
+        "CSV 저장 완료. 클러스터 배정 준비 중...",
+        startedAt=_timestamp(),
+        stage="upload",
+        clientId=client_id,
+        latestModelPath=None,
+        latestImportancePath=None,
+        latestImportance=[],
+        savedCsvPath=str(saved_csv_path),
+        centralSync={
+            "clientId": client_id,
+            "savedCsvPath": str(saved_csv_path),
+        },
+    )
+
+    threading.Thread(target=_run_cluster_assignment_for_prediction, args=(prepared, authorization), daemon=True).start()
     return {"status": "started", "server": FLOWER_SERVER}
+
+
+@app.post("/sync-fl-model")
+async def sync_fl_model(request: Request) -> dict[str, Any]:
+    with _TRAINING_LOCK:
+        if _TRAINING_STATE["status"] == "running":
+            raise HTTPException(status_code=409, detail="이미 처리가 진행 중입니다.")
+
+    authorization = request.headers.get("authorization")
+    _audit_event(
+        "local.sync_fl_model.received",
+        centralBackend=CENTRAL_BACKEND_URL,
+        savedCsvDir=UPLOADED_CSV_DIR,
+        hasAuthorization=bool(authorization),
+    )
+    threading.Thread(target=_run_fl_model_sync, args=(authorization,), daemon=True).start()
+    return {"status": "started", "message": "누적 CSV 기반 FL 모델 동기화를 시작했습니다."}
 
 
 @app.get("/health")
@@ -1086,6 +1751,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "modelDirExists": CLIENT_MODEL_DIR.exists(),
+        "centralBackend": CENTRAL_BACKEND_URL,
         "selectedFeatures": SELECTED_FEATURES,
     }
 
@@ -1093,10 +1759,33 @@ def health() -> dict[str, Any]:
 @app.post("/analyze-csv")
 async def analyze_csv(file: UploadFile = File(...)) -> dict[str, Any]:
     content = await file.read()
+    _audit_event(
+        "local.analyze_csv.received",
+        fileName=file.filename or "uploaded.csv",
+        bytes=len(content),
+    )
     raw_df = _read_csv(file, content)
     prepared, validation, issues, stock_available = _prepare_frame(raw_df)
     fallback_model_path = _choose_model_path(raw_df)
+    client_ids = sorted(str(client_id) for client_id in prepared["client_id"].dropna().unique())
+    _audit_event(
+        "local.analyze_csv.prepared",
+        fileName=file.filename or "uploaded.csv",
+        rows=len(raw_df),
+        usableRows=len(prepared),
+        clientIds=client_ids,
+        fallbackModelPath=fallback_model_path,
+        minDate=prepared["sale_date"].min().strftime("%Y-%m-%d"),
+        maxDate=prepared["sale_date"].max().strftime("%Y-%m-%d"),
+    )
     historical_predictions, latest_predictions, used_model_paths = _predict_sales(prepared, fallback_model_path)
+    _audit_event(
+        "local.analyze_csv.completed",
+        fileName=file.filename or "uploaded.csv",
+        predictedItems=len(latest_predictions),
+        usedModelPaths=used_model_paths,
+        forecastDate=str(latest_predictions["forecast_date"].max().date()) if "forecast_date" in latest_predictions else None,
+    )
     return _build_dashboard(
         file_name=file.filename or "uploaded.csv",
         source=prepared,
@@ -1128,5 +1817,16 @@ if _FRONTEND.exists():
         app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
     @app.get("/{full_path:path}")
-    async def _serve_spa(full_path: str) -> FileResponse:
+    async def _serve_spa(full_path: str, request: Request) -> FileResponse:
+        blocked_paths = {
+            "ai/health",
+            "debug/trace",
+            "docs",
+            "openapi.json",
+            "redoc",
+        }
+        if full_path in blocked_paths or full_path.startswith("clients/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        if "text/html" not in request.headers.get("accept", ""):
+            raise HTTPException(status_code=404, detail="Not Found")
         return FileResponse(str(_FRONTEND / "index.html"))

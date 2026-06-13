@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -11,7 +11,7 @@ import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { RunStatusModal, type RunStatusStep } from "../components/ui/RunStatusModal";
-import { analyzeCsvWithAi, fetchLocalState, fetchTrainingStatus, startTrainingWithAi } from "../lib/ai-api";
+import { analyzeCsvWithAi, fetchLocalState, fetchTrainingStatus, startTrainingWithAi, syncFlModelWithAi } from "../lib/ai-api";
 import type { CsvStatus, DashboardData, LocalState, TrainingStatus } from "../types/dashboard";
 
 type RunStageId = "upload" | "preprocess" | "importance" | "localTraining" | "centralSync" | "prediction" | "complete";
@@ -50,7 +50,16 @@ function stageIdFromTrainingStatus(status: TrainingStatus): RunStageId {
   if (status.stage === "preprocess") return "preprocess";
   if (status.stage === "importance") return "importance";
   if (status.stage === "local_training") return "localTraining";
-  if (status.stage === "central_register" || status.stage === "central_download") return "centralSync";
+  if (
+    status.stage === "central_register" ||
+    status.stage === "central_download" ||
+    status.stage === "central_cluster_assignment" ||
+    status.stage === "central_fl_model_sync" ||
+    status.stage === "cluster_model_download"
+  ) {
+    return "centralSync";
+  }
+  if (status.stage === "sync_load") return "preprocess";
   if (status.stage === "done") return "prediction";
 
   if (status.message.includes("전처리")) return "preprocess";
@@ -115,6 +124,7 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
+  const [isSyncingFlModel, setIsSyncingFlModel] = useState(false);
   const [isTrainingAccepted, setIsTrainingAccepted] = useState(false);
   const [hasObservedTrainingRun, setHasObservedTrainingRun] = useState(false);
   const [runModalOpen, setRunModalOpen] = useState(false);
@@ -122,6 +132,8 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
   const [runModalError, setRunModalError] = useState<RunModalError | null>(null);
   const [runModalNotice, setRunModalNotice] = useState<string | null>(null);
   const [isRunComplete, setIsRunComplete] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const pendingFileRef = useRef<File | null>(null);
   const hasPredictedRef = useRef(false);
@@ -187,11 +199,11 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
     }
   }, [hasObservedTrainingRun, isRunComplete, isTrainingAccepted, runModalError, trainingStatus]);
 
-  const refreshState = async () => {
+  const refreshState = useCallback(async () => {
     const [state, status] = await Promise.all([fetchLocalState(), fetchTrainingStatus()]);
     setLocalState(state);
     setTrainingStatus(status);
-  };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,15 +231,67 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
 
     void load();
 
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTrainingAccepted || !pendingFileRef.current || runModalError || isRunComplete) return;
+    if (trainingStatus.status === "done" || trainingStatus.status === "error") return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        await refreshState();
+      } catch (error) {
+        if (!cancelled) {
+          void error;
+          setRunModalError(buildRunError("preprocess"));
+        }
+      }
+    };
+
     const interval = window.setInterval(() => {
-      void load();
+      void poll();
     }, 4000);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [isRunComplete, isTrainingAccepted, refreshState, runModalError, trainingStatus.status]);
+
+  useEffect(() => {
+    if (!isSyncingFlModel) return;
+
+    if (trainingStatus.status === "done") {
+      setIsSyncingFlModel(false);
+      setSyncNotice("FL 모델 동기화가 완료되었습니다.");
+      return;
+    }
+    if (trainingStatus.status === "error") {
+      setIsSyncingFlModel(false);
+      setSyncError(trainingStatus.message || "FL 모델 동기화 중 오류가 발생했습니다.");
+      return;
+    }
+
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      refreshState().catch((error: unknown) => {
+        if (!cancelled) {
+          void error;
+          setIsSyncingFlModel(false);
+          setSyncError("FL 모델 동기화 상태를 확인하지 못했습니다.");
+        }
+      });
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [isSyncingFlModel, refreshState, trainingStatus.message, trainingStatus.status]);
 
   const handleTrainingFile = async (file: File) => {
     pendingFileRef.current = file;
@@ -243,13 +307,40 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
     try {
       await startTrainingWithAi(file);
       setIsTrainingAccepted(true);
+      setHasObservedTrainingRun(true);
       setRunStage("preprocess");
+      setTrainingStatus((current) => ({
+        ...current,
+        status: "running",
+        stage: "preprocess",
+        message: "데이터 전처리 중...",
+        latestImportance: current.latestImportance ?? [],
+      }));
       await refreshState();
     } catch (error) {
       void error;
       setRunModalError(buildRunError("upload"));
     } finally {
       setIsStarting(false);
+    }
+  };
+
+  const handleSyncFlModel = async () => {
+    setSyncNotice(null);
+    setSyncError(null);
+    setIsSyncingFlModel(true);
+    try {
+      const result = await syncFlModelWithAi();
+      setTrainingStatus((current) => ({
+        ...current,
+        status: "running",
+        stage: "sync_load",
+        message: result.message ?? "누적 CSV 기반 FL 모델 동기화를 시작했습니다.",
+        latestImportance: current.latestImportance ?? [],
+      }));
+    } catch (error) {
+      setIsSyncingFlModel(false);
+      setSyncError(error instanceof Error ? error.message : "FL 모델 동기화를 시작하지 못했습니다.");
     }
   };
 
@@ -303,11 +394,15 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
               지금까지의 판매 이력을 올리면 상품별 수요 흐름을 확인하고, 다음 날짜 판매량을 바로 예측합니다.
             </p>
             <div className="mt-5 flex flex-wrap gap-3">
-              <Button type="button" onClick={() => inputRef.current?.click()} disabled={isStarting || isPredicting}>
+              <Button type="button" onClick={() => inputRef.current?.click()} disabled={isStarting || isPredicting || isSyncingFlModel}>
                 {isStarting ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileUp className="h-4 w-4" aria-hidden="true" />}
                 {isStarting ? "파일 확인 중" : "CSV 선택"}
               </Button>
-              <Button type="button" variant="outline" onClick={() => void refreshState()} disabled={isLoading || isPredicting}>
+              <Button type="button" variant="outline" onClick={() => void handleSyncFlModel()} disabled={isLoading || isStarting || isPredicting || isSyncingFlModel || trainingStatus.status === "running"}>
+                {isSyncingFlModel ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-4 w-4" aria-hidden="true" />}
+                {isSyncingFlModel ? "동기화 중" : "FL 모델 동기화"}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void refreshState()} disabled={isLoading || isPredicting || isSyncingFlModel}>
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
                 상태 새로고침
               </Button>
@@ -316,6 +411,18 @@ export function TrainingPage({ onTrainingComplete }: TrainingPageProps) {
               <div className="mt-4 flex items-center gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
                 <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                 판매 예측 결과를 준비하는 중입니다.
+              </div>
+            ) : null}
+            {syncNotice ? (
+              <div className="mt-4 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                {syncNotice}
+              </div>
+            ) : null}
+            {syncError ? (
+              <div className="mt-4 flex items-center gap-2 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                <Activity className="h-4 w-4" aria-hidden="true" />
+                {syncError}
               </div>
             ) : null}
             <input

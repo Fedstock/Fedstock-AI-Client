@@ -1,9 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Cpu,
   LayoutDashboard,
   Upload,
 } from "lucide-react";
+import { fetchCurrentUser, logout } from "./api/auth";
+import { getAccessToken } from "./api/token";
+import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 import { DashboardShell } from "./components/layout/DashboardShell";
 import { CsvUploadPage } from "./pages/CsvUploadPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -36,11 +39,47 @@ const pages: PageDefinition[] = [
   },
 ];
 
+const STORE_ID_KEY = "fedstock_store_id";
+
 export default function App() {
   const [activePage, setActivePage] = useState<PageId>("training");
   const [dashboardData, setDashboardData] = useState<DashboardData>(emptyDashboardData);
   const [csvStatus, setCsvStatus] = useState<CsvStatus>(emptyCsvStatus);
-  const [storeId, setStoreId] = useState(() => window.localStorage.getItem("fedstock_store_id") ?? "");
+  const [accessToken, setAccessTokenState] = useState(() => getAccessToken());
+  const [storeId, setStoreId] = useState(() => window.localStorage.getItem(STORE_ID_KEY) ?? "");
+  const isAuthenticated = Boolean(accessToken);
+
+  useEffect(() => {
+    if (!isAuthenticated && window.location.pathname !== "/login") {
+      window.history.replaceState(null, "", "/login");
+    }
+
+    if (isAuthenticated && window.location.pathname === "/login") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let cancelled = false;
+
+    fetchCurrentUser()
+      .then((user) => {
+        if (cancelled) return;
+        const nextStoreId = user.name ?? user.storeId ?? user.email;
+        if (!nextStoreId) return;
+        window.localStorage.setItem(STORE_ID_KEY, nextStoreId);
+        setStoreId(nextStoreId);
+      })
+      .catch(() => {
+        // The response interceptor handles expired sessions. Display can keep the stored id.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   const headerSummary = useMemo(() => {
     const hasAiResult = dashboardData.source === "ai";
@@ -89,31 +128,37 @@ export default function App() {
     }
   }, [activePage, csvStatus, dashboardData]);
 
-  if (!storeId) {
+  if (!isAuthenticated) {
     return (
       <LoginPage
         onLogin={(nextStoreId) => {
-          window.localStorage.setItem("fedstock_store_id", nextStoreId);
+          window.localStorage.setItem(STORE_ID_KEY, nextStoreId);
           setStoreId(nextStoreId);
+          setAccessTokenState(getAccessToken());
+          window.history.replaceState(null, "", "/");
         }}
       />
     );
   }
 
   return (
-    <DashboardShell
-      pages={pages}
-      activePage={activePage}
-      onPageChange={setActivePage}
-      dataSource={dashboardData.source}
-      headerSummary={headerSummary}
-      storeId={storeId}
-      onLogout={() => {
-        window.localStorage.removeItem("fedstock_store_id");
-        setStoreId("");
-      }}
-    >
-      {pageContent}
-    </DashboardShell>
+    <ProtectedRoute>
+      <DashboardShell
+        pages={pages}
+        activePage={activePage}
+        onPageChange={setActivePage}
+        dataSource={dashboardData.source}
+        headerSummary={headerSummary}
+        storeId={storeId}
+        onLogout={() => {
+          window.localStorage.removeItem(STORE_ID_KEY);
+          setStoreId("");
+          setAccessTokenState(null);
+          logout();
+        }}
+      >
+        {pageContent}
+      </DashboardShell>
+    </ProtectedRoute>
   );
 }

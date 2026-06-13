@@ -184,6 +184,9 @@ export type TrainingStatus = {
     centralFlModelPath?: string | null;
     effectiveModelPath?: string | null;
     centralEffectiveModelPath?: string | null;
+    savedCsvPath?: string | null;
+    savedCsvCount?: number;
+    savedCsvPaths?: string[];
   } | null;
 };
 
@@ -201,6 +204,9 @@ export type LocalState = {
   modelDirExists: boolean;
   pretrainedModelCount: number;
   localOutputDir: string;
+  uploadedCsvDir?: string | null;
+  savedCsvCount?: number;
+  latestSavedCsvPath?: string | null;
   localModelCount: number;
   syncedModelCount: number;
   latestSyncedModelPath?: string | null;
