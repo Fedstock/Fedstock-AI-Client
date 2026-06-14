@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
+  Check,
   ChevronDown,
   CloudSun,
+  Package,
   TrendingUp,
   Upload,
 } from "lucide-react";
@@ -20,7 +23,7 @@ import {
 import { SalesTrendChart } from "../components/dashboard/SalesTrendChart";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { EmptyState } from "../components/ui/EmptyState";
-import type { DashboardData, ForecastItem, Metric } from "../types/dashboard";
+import type { DashboardData, ForecastDailySeries, ForecastItem, Metric } from "../types/dashboard";
 import { fetchWeatherInsight, type WeatherInsight } from "../lib/weather-insight";
 import { formatNumber } from "../lib/utils";
 
@@ -49,15 +52,15 @@ function CompactMetricCard({ metric }: { metric: SummaryCard }) {
   const Icon = metric.icon;
 
   return (
-    <Card className="rounded-[18px] p-3.5 shadow-[0_10px_28px_rgb(15,23,42,0.035)]">
+    <Card className="p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-xs font-medium text-slate-400">{metric.label}</p>
-          <p className="mt-1.5 pl-0.5 text-xl font-bold tracking-tight text-slate-950">{metric.value}</p>
-          {metric.helper ? <p className="mt-2 truncate text-xs text-slate-400">{metric.helper}</p> : null}
+          <p className="truncate text-xs font-semibold text-slate-400">{metric.label}</p>
+          <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-950">{metric.value}</p>
+          {metric.helper ? <p className="mt-2 truncate text-xs font-semibold text-slate-400">{metric.helper}</p> : null}
         </div>
-        <div className={`rounded-xl p-2.5 ${metric.tone}`}>
-          <Icon className="h-4 w-4" aria-hidden="true" />
+        <div className={`rounded-2xl p-3 ${metric.tone}`}>
+          <Icon className="h-5 w-5" aria-hidden="true" />
         </div>
       </div>
     </Card>
@@ -75,10 +78,6 @@ function metricToneClass(tone: Metric["tone"]) {
   }[tone ?? "neutral"];
 }
 
-function isForecastMetric(metric: Metric) {
-  return !/(품절|재고|발주)/.test(metric.label);
-}
-
 function toChartNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -86,6 +85,133 @@ function toChartNumber(value: number | null | undefined) {
 function displayCategory(category: string) {
   const raw = category.split("·").pop()?.trim() ?? category;
   return raw || "상품군 미확인";
+}
+
+function metricToSummaryCard(metric: Metric): SummaryCard {
+  return {
+    label: metric.label,
+    value: metric.value,
+    helper: metric.helper,
+    icon: metric.icon,
+    tone: metricToneClass(metric.tone),
+  };
+}
+
+function buildForecastSummaryCards(data: DashboardData, forecastWindowLabel?: string): SummaryCard[] {
+  const forecastMetric = data.overviewMetrics.find((metric) => /예상 판매량|AI 예상/.test(metric.label));
+  const revenueMetric = data.overviewMetrics.find((metric) => /매출/.test(metric.label));
+  const topItem = data.forecastItems[0];
+
+  return [
+    forecastMetric
+      ? metricToSummaryCard(forecastMetric)
+      : {
+          label: "다음날 AI 예상 판매량",
+          value: "0개",
+          helper: forecastWindowLabel ?? "예측 대기",
+          icon: TrendingUp,
+          tone: metricToneClass("primary"),
+        },
+    {
+      label: "분석 상품 수",
+      value: `${formatNumber(data.forecastItems.length)}개`,
+      helper: forecastWindowLabel ?? "상품별 예측 완료",
+      icon: Package,
+      tone: metricToneClass("info"),
+    },
+    {
+      label: "최고 예측 상품",
+      value: topItem ? `${formatNumber(topItem.forecastQty)}개` : "-",
+      helper: topItem?.itemName ?? "상품 데이터 없음",
+      icon: BarChart3,
+      tone: metricToneClass("warning"),
+    },
+    revenueMetric
+      ? metricToSummaryCard(revenueMetric)
+      : {
+          label: "예상 매출",
+          value: "-",
+          helper: "예측 판매량 × 판매가",
+          icon: TrendingUp,
+          tone: metricToneClass("success"),
+        },
+  ];
+}
+
+function ForecastSeriesSelect({
+  items,
+  selectedSeries,
+  onChange,
+}: {
+  items: ForecastDailySeries[];
+  selectedSeries: ForecastDailySeries;
+  onChange: (itemId: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        className="flex min-h-[68px] w-full items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-[0_12px_30px_rgba(15,23,42,0.07)] transition hover:border-blue-200 hover:shadow-[0_16px_36px_rgba(37,99,235,0.12)] focus:outline-none focus:ring-4 focus:ring-blue-100"
+        onClick={() => setIsOpen((current) => !current)}
+        aria-expanded={isOpen}
+      >
+        <div className="min-w-0">
+          <p className="truncate text-sm font-extrabold text-blue-950" title={selectedSeries.itemName}>
+            {selectedSeries.itemName}
+          </p>
+          <p className="mt-1.5 text-xs font-semibold text-slate-400">
+            다음날 예측 {formatNumber(selectedSeries.forecastQty)}개 · 전체 {items.length}개 상품
+          </p>
+        </div>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-blue-700 transition ${isOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+
+      {isOpen ? (
+        <div className="absolute right-0 z-30 mt-2 max-h-[320px] w-full overflow-auto rounded-2xl border border-slate-100 bg-white p-2 shadow-[0_22px_60px_rgba(15,23,42,0.16)]">
+          {items.map((series) => {
+            const isSelected = series.itemId === selectedSeries.itemId;
+            return (
+              <button
+                key={series.itemId}
+                type="button"
+                className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition ${
+                  isSelected ? "bg-blue-50 text-blue-950" : "text-slate-700 hover:bg-slate-50"
+                }`}
+                onClick={() => {
+                  onChange(series.itemId);
+                  setIsOpen(false);
+                }}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-bold">{series.itemName}</span>
+                  <span className="mt-0.5 block text-xs font-semibold text-slate-400">
+                    다음날 예측 {formatNumber(series.forecastQty)}개
+                  </span>
+                </span>
+                {isSelected ? <Check className="h-4 w-4 shrink-0 text-blue-600" aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function ForecastDistribution({
@@ -333,7 +459,7 @@ export function OverviewPage({ data }: { data: DashboardData }) {
 
   if (data.source === "empty") {
     return (
-      <div className="mx-auto w-full max-w-[1080px]">
+      <div className="mx-auto w-full max-w-[1320px]">
         <EmptyState
           icon={Upload}
           title="판매 이력 파일이 필요합니다"
@@ -343,23 +469,15 @@ export function OverviewPage({ data }: { data: DashboardData }) {
     );
   }
 
-  const summaryCards: SummaryCard[] = data.overviewMetrics
-    .filter(isForecastMetric)
-    .map((metric) => ({
-      label: metric.label,
-      value: metric.value,
-      helper: metric.helper,
-      icon: metric.icon,
-      tone: metricToneClass(metric.tone),
-    }));
   const forecastWindow = data.forecastWindow;
+  const summaryCards = buildForecastSummaryCards(data, forecastWindow?.label);
 
   return (
-    <div className="mx-auto w-full max-w-[1080px] space-y-6">
+    <div className="mx-auto w-full max-w-[1320px] space-y-6">
       {weatherInsight ? <WeatherInsightBanner insight={weatherInsight} /> : null}
 
       {summaryCards.length ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {summaryCards.map((metric) => (
             <CompactMetricCard key={metric.label} metric={metric} />
           ))}
@@ -376,32 +494,12 @@ export function OverviewPage({ data }: { data: DashboardData }) {
                   최근 실제 판매량과 다음 날짜 AI 예측 판매량을 같은 그래프에서 확인합니다.
                 </CardDescription>
               </div>
-              <div className="w-full xl:w-[300px]">
-                <label className="relative block cursor-pointer">
-                  <span className="sr-only">상품 선택</span>
-                  <div className="flex min-h-[64px] items-center justify-between gap-4 border-b border-slate-200 bg-white px-1 py-3 transition hover:border-blue-300">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-extrabold text-blue-950" title={selectedSeries.itemName}>
-                        {selectedSeries.itemName}
-                      </p>
-                      <p className="mt-1.5 text-xs font-semibold text-slate-400">
-                        다음날 예측 {formatNumber(selectedSeries.forecastQty)}개 · 전체 {forecastDailySeries.length}개 상품
-                      </p>
-                    </div>
-                    <ChevronDown className="h-4 w-4 shrink-0 text-blue-700" aria-hidden="true" />
-                  </div>
-                  <select
-                    value={selectedSeries.itemId}
-                    onChange={(event) => setSelectedItemId(event.target.value)}
-                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                  >
-                    {forecastDailySeries.map((series) => (
-                      <option key={series.itemId} value={series.itemId}>
-                        {series.itemName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              <div className="w-full xl:w-[320px]">
+                <ForecastSeriesSelect
+                  items={forecastDailySeries}
+                  selectedSeries={selectedSeries}
+                  onChange={setSelectedItemId}
+                />
               </div>
             </div>
           </div>

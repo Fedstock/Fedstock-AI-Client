@@ -43,6 +43,12 @@ export function RunStatusModal({
   const activeIndex = Math.max(0, steps.findIndex((step) => step.id === activeStepId));
   const isLoading = mode === "loading";
   const isError = mode === "error";
+  const noticeClassName =
+    mode === "success"
+      ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+      : mode === "error"
+        ? "border-red-100 bg-red-50 text-red-700"
+        : "border-blue-100 bg-blue-50 text-blue-700";
 
   return createPortal(
     <div className="analysis-overlay-in fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/40 px-5 backdrop-blur-md">
@@ -88,7 +94,7 @@ export function RunStatusModal({
         </p>
 
         {notice ? (
-          <div className="mx-auto mt-5 max-w-[560px] rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
+          <div className={`mx-auto mt-5 max-w-[560px] rounded-2xl border px-4 py-3 text-sm font-medium ${noticeClassName}`}>
             {notice}
           </div>
         ) : null}

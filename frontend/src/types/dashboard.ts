@@ -2,8 +2,8 @@ import type { LucideIcon } from "lucide-react";
 
 export type PageId =
   | "overview"
-  | "training"
-  | "upload";
+  | "operations"
+  | "training";
 
 export type Trend = "up" | "down" | "stable";
 export type InventoryStatus = "critical" | "warning" | "normal" | "overstock";
@@ -187,7 +187,15 @@ export type TrainingStatus = {
     savedCsvPath?: string | null;
     savedCsvCount?: number;
     savedCsvPaths?: string[];
-  } | null;
+    flRoundId?: string;
+    globalModelPath?: string | null;
+    modelVersion?: string;
+    completedAt?: string;
+    updatedStoreCount?: number;
+    neighborhoodSalesDays?: number;
+    message?: string;
+    scope?: string;
+      } | null;
 };
 
 export type LocalState = {

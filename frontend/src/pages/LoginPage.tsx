@@ -14,6 +14,7 @@ type LoginPageProps = {
 
 type PasswordFieldProps = {
   label: string;
+  name: string;
   value: string;
   visible: boolean;
   autoComplete: string;
@@ -104,6 +105,7 @@ function TextField({ label, className, ...props }: TextFieldProps) {
 
 function PasswordField({
   label,
+  name,
   value,
   visible,
   autoComplete,
@@ -121,10 +123,13 @@ function PasswordField({
         <Input
           className="h-[42px] rounded-lg border-[#D9DDE7] bg-white px-4 pr-12 text-[14px] font-semibold text-[#141824] shadow-[0_1px_0_rgba(15,23,42,0.03)] transition-[border-color,box-shadow,background-color] duration-200 placeholder:font-medium placeholder:text-[#9AA3B2] hover:border-[#B8C0D4] focus:border-[#5B4BFF] focus:bg-white focus:ring-4 focus:ring-[#5B4BFF]/10 disabled:bg-[#F7F8FB]"
           type={visible ? "text" : "password"}
+          name={name}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           autoComplete={autoComplete}
+          data-lpignore="true"
+          data-1p-ignore="true"
           disabled={disabled}
         />
         <button
@@ -316,36 +321,50 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               </p>
             </div>
 
-            <form className="mt-8 space-y-8" onSubmit={handleSubmit}>
+            <form className="mt-8 space-y-8" onSubmit={handleSubmit} autoComplete="off">
               <div className="space-y-6">
                 {isSignup ? (
                   <TextField
                     label="이름 또는 매장명"
+                    name="fedstock_display_text"
                     value={name}
                     onChange={(event) => setName(event.target.value)}
                     placeholder="예: Gachon Market"
-                    autoComplete="name"
+                    autoComplete="new-password"
+                    autoCorrect="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     disabled={isSubmitting}
                   />
                 ) : null}
 
                 <TextField
                   label="이메일"
+                  type="search"
+                  name="fedstock_manual_identifier"
                   value={identifier}
                   onChange={(event) => setIdentifier(event.target.value)}
                   placeholder="store@fedstock.com"
-                  autoComplete="username"
+                  autoComplete="new-password"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  data-lpignore="true"
+                  data-1p-ignore="true"
                   disabled={isSubmitting}
                 />
 
                 <PasswordField
                   label="비밀번호"
+                  name="fedstock_manual_secret"
                   value={password}
                   visible={showPassword}
                   onChange={setPassword}
                   onToggleVisible={() => setShowPassword((current) => !current)}
                   placeholder="8자 이상 입력"
-                  autoComplete={isSignup ? "new-password" : "current-password"}
+                  autoComplete="new-password"
                   disabled={isSubmitting}
                 />
 
@@ -383,6 +402,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 {isSignup ? (
                   <PasswordField
                     label="비밀번호 확인"
+                    name="fedstock_manual_secret_confirm"
                     value={passwordConfirm}
                     visible={showPasswordConfirm}
                     onChange={setPasswordConfirm}

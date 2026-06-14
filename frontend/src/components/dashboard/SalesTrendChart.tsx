@@ -16,6 +16,7 @@ type SalesTrendChartProps = {
   data: SalesTrendPoint[];
   salesName?: string;
   forecastName?: string;
+  height?: number;
 };
 
 type EnhancedSalesTrendPoint = SalesTrendPoint & {
@@ -27,6 +28,7 @@ export function SalesTrendChart({
   data,
   salesName = "실제 판매",
   forecastName = "예상 판매",
+  height = 320,
 }: SalesTrendChartProps) {
   const toFiniteNumber = (value: number | null | undefined) => (
     typeof value === "number" && Number.isFinite(value) ? value : null
@@ -73,7 +75,7 @@ export function SalesTrendChart({
   };
 
   return (
-    <ResponsiveContainer width="100%" height={320}>
+    <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={chartData} margin={{ top: 26, right: 18, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">

@@ -44,7 +44,7 @@ export function DataTable<TData>({
 
   return (
     <Card>
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-[#1F2937]">{title}</h2>
           {description ? <p className="mt-1 text-sm text-[#6B7280]">{description}</p> : null}
